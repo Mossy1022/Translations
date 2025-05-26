@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>GOOGLE_TRANSLATE_API_KEY</key>
+	<string>AIzaSyBmoz31vd9Xh46SQmEq3qdIk7qhnx3LHmM</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_ewonic-xlat._tcp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

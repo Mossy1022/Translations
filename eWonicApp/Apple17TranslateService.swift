@@ -3,8 +3,8 @@ import Foundation
 
 @available(iOS, introduced: 17, obsoleted: 18)
 
-final class LocalTranslateService {
-  static let shared = LocalTranslateService()
+final class Apple17TranslateService {
+  static let shared = Apple17TranslateService()
   private init() {}
 
   @MainActor

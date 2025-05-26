@@ -10,6 +10,47 @@ import Combine
 import Speech // For SFSpeechRecognizerAuthorizationStatus
 
 class TranslationViewModel: ObservableObject {
+    
+    enum STTError: Error, LocalizedError, Equatable {
+      case unavailable
+      case permissionDenied
+      case recognitionError(Error)
+      case taskError(String)
+      case noAudioInput
+
+      var errorDescription: String? {
+        switch self {
+        case .unavailable:
+          return "Speech recognition is not available on this device or for the selected language."
+        case .permissionDenied:
+          return "Speech recognition permission was denied."
+        case .recognitionError(let e):
+          return "Recognition failed: \(e.localizedDescription)"
+        case .taskError(let msg):
+          return msg
+        case .noAudioInput:
+          return "No audio input was detected or the input was too quiet."
+        }
+      }
+
+      static func == (lhs: STTError, rhs: STTError) -> Bool {
+        switch (lhs, rhs) {
+        case (.unavailable, .unavailable),
+             (.permissionDenied, .permissionDenied),
+             (.noAudioInput, .noAudioInput):
+          return true
+        case (.taskError(let lMsg), .taskError(let rMsg)):
+          return lMsg == rMsg
+        case (.recognitionError, .recognitionError):
+          // Since Error doesn't conform to Equatable, we consider all recognitionErrors as equal
+          return true
+        default:
+          return false
+        }
+      }
+    }
+
+    
     @Published var multipeerSession = MultipeerSession()
     @Published var sttService = NativeSTTService()
     @Published var ttsService = AppleTTSService()
@@ -56,6 +97,7 @@ class TranslationViewModel: ObservableObject {
             self?.handleReceivedMessage(messageData)
         }
 
+    
         multipeerSession.$connectionState
             .map { state -> String in
                 let peerName = self.multipeerSession.connectedPeers.first?.displayName ?? "peer"
@@ -94,6 +136,11 @@ class TranslationViewModel: ObservableObject {
                 self.sendTextToPeer(originalText: finalText)
             })
             .store(in: &cancellables)
+        
+        ttsService.finishedSubject
+          .receive(on: DispatchQueue.main)
+          .sink { [weak self] in self?.isProcessing = false }
+          .store(in: &cancellables)
     }
 
     func checkAllPermissions() {
@@ -145,68 +192,73 @@ class TranslationViewModel: ObservableObject {
 
     // User A: Sends their transcribed text to User B
     private func sendTextToPeer(originalText: String) {
-        guard !originalText.isEmpty else {
-            myTranscribedText = "Nothing to send."
-            isProcessing = false
-            return
+      guard !originalText.isEmpty else {
+        print("⚠️ sendTextToPeer: originalText is empty, skipping send")
+        myTranscribedText = "Nothing to send."
+        isProcessing = false
+        return
+      }
+
+      translationForPeerToSend = originalText
+      print("📤 Preparing message to send: '\(originalText)'")
+      print("   Source: \(myLanguage), Target: \(peerLanguage)")
+      print("   Peers connected: \(multipeerSession.connectedPeers.map { $0.displayName })")
+
+      let message = MessageData(
+        id: UUID(),
+        originalText: originalText,
+        sourceLanguageCode: myLanguage,
+        targetLanguageCode: peerLanguage
+      )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+          self.multipeerSession.send(message: message)
         }
-        
-        translationForPeerToSend = originalText // For potential debug, not directly displayed
-        print("ViewModel: Sending '\(originalText)' from \(myLanguage) to be translated to \(peerLanguage)")
-        
-        let message = MessageData(
-            id: UUID(),
-            originalText: originalText,
-            sourceLanguageCode: myLanguage, // My language is the source
-            targetLanguageCode: peerLanguage  // Peer's language is the target
-        )
-        multipeerSession.send(message: message)
-        // isProcessing remains true until User B's device has processed and potentially sent an ack,
-        // or we can set it to false here if we consider User A's "job" done for this utterance.
-        // For simplicity, STT completion already set isProcessing to false. If sending is fast, this is okay.
+      print("✅ Sent message to peer(s)")
     }
 
     // User B: Handles message received from User A
     private func handleReceivedMessage(_ message: MessageData) {
-        print("ViewModel: Received message to process: '\(message.originalText)' from \(message.sourceLanguageCode) to be translated to \(message.targetLanguageCode)")
-        
-        // Safety check: Is this message for me to translate and hear?
-        // The targetLanguageCode in the message should be MY language.
-        guard message.targetLanguageCode == myLanguage else {
-            print("ViewModel: Received message not intended for my current language. Ignoring. Target: \(message.targetLanguageCode), My Lang: \(myLanguage)")
-            // This might happen if languages are swapped mid-conversation without full sync.
-            return
-        }
+      print("📨 handleReceivedMessage triggered")
+      print("   ID: \(message.id)")
+      print("   From: \(message.sourceLanguageCode) → \(message.targetLanguageCode)")
+      print("   Text: '\(message.originalText)'")
 
-        DispatchQueue.main.async {
-            self.isProcessing = true
-            self.myTranscribedText = "" // Clear my text area
-            self.peerSaidText = "Peer (\(message.sourceLanguageCode)): \(message.originalText)"
-            self.translatedTextForMeToHear = "Translating..."
-        }
+      DispatchQueue.main.async {
+        self.isProcessing = true
+        self.myTranscribedText = ""
+        self.peerSaidText = "Peer (\(message.sourceLanguageCode)): \(message.originalText)"
+        self.translatedTextForMeToHear = "Translating..."
+      }
 
-        translateService.translateText(
-            message.originalText,
-            from: message.sourceLanguageCode,
-            to: message.targetLanguageCode // This is MY language
-        ) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                switch result {
-                case .success(let translated):
-                    self.translatedTextForMeToHear = "Translation (\(message.targetLanguageCode)): \(translated)"
-                    self.synthesizeAndPlay(text: translated, languageCode: message.targetLanguageCode) // Play in MY language
-                case .failure(let error):
-                    self.translatedTextForMeToHear = "Translation Error: \(error.localizedDescription)"
-                    self.isProcessing = false
-                }
+        Task {
+          do {
+            let (translated, engine) = try await UnifiedTranslateService.translate(
+                  message.originalText,
+                  from: message.sourceLanguageCode,
+                  to:   message.targetLanguageCode)
+
+            print("✅ \(engine) translated: '\(translated)'")
+            await MainActor.run {
+              self.translatedTextForMeToHear = "You hear: \(translated)"
+              self.synthesizeAndPlay(text: translated,
+                                     languageCode: message.targetLanguageCode)
             }
+          } catch {
+            await MainActor.run {
+              self.translatedTextForMeToHear = "Local translation unavailable."
+              self.isProcessing = false
+            }
+          }
         }
     }
 
     // User B: Synthesizes and plays the translated text (in their own language)
     private func synthesizeAndPlay(text: String, languageCode: String) {
         ttsService.speak(text: text, languageCode: languageCode)
+        
+        print("🔊 synthesizeAndPlay called with text: \(text), lang: \(languageCode)")
+
         // isProcessing will be set to false once TTS finishes or if an error occurs during translation.
         // If TTS is quick, we can set isProcessing = false here.
         // For more robust state, AVSpeechSynthesizerDelegate could signal completion.
@@ -229,3 +281,5 @@ class TranslationViewModel: ObservableObject {
         multipeerSession.disconnect()
     }
 }
+
+

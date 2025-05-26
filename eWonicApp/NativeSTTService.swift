@@ -1,211 +1,209 @@
 //
 //  NativeSTTService.swift
-//  eWonicMVP
+//  eWonicApp
 //
 //  Created by Evan Moscoso on 5/18/25.
 //
 
+import Foundation
+import AVFoundation
 import Speech
 import Combine
 
+// MARK: – Speech‑to‑Text error envelope used by the rest of the app
 enum STTError: Error, LocalizedError {
-    case unavailable
-    case permissionDenied
-    case recognitionError(Error)
-    case taskError(String)
-    case noAudioInput
+  case unavailable
+  case permissionDenied
+  case recognitionError(Error)
+  case taskError(String)
+  case noAudioInput
 
-    var errorDescription: String? {
-        switch self {
-        case .unavailable: return "Speech recognition is not available on this device or for the selected language."
-        case .permissionDenied: return "Speech recognition permission was denied."
-        case .recognitionError(let err): return "Recognition failed: \(err.localizedDescription)"
-        case .taskError(let msg): return msg
-        case .noAudioInput: return "No audio input was detected or the input was too quiet."
-        }
+  var errorDescription: String? {
+    switch self {
+    case .unavailable:          return "Speech recognition is not available on this device or for the selected language."
+    case .permissionDenied:     return "Speech recognition permission was denied."
+    case .recognitionError(let e): return "Recognition failed: \(e.localizedDescription)"
+    case .taskError(let msg):   return msg
+    case .noAudioInput:         return "No audio input was detected or the input was too quiet."
     }
+  }
 }
 
-class NativeSTTService: ObservableObject {
-    private var speechRecognizer: SFSpeechRecognizer?
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private let audioEngine = AVAudioEngine()
+/// Manages the AVAudioEngine + SFSpeechRecognizer pipeline and publishes
+/// partial / final results via Combine.
+///
+/// Must inherit from `NSObject` – `SFSpeechRecognizerDelegate` in Objective‑C
+/// extends `NSObjectProtocol`.
+final class NativeSTTService: NSObject, ObservableObject {
+  // MARK: – Private engine / recognizer plumbing
+  private var speechRecognizer: SFSpeechRecognizer?
+  private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+  private var recognitionTask: SFSpeechRecognitionTask?
+  private let audioEngine = AVAudioEngine()
 
-    @Published var isListening = false
-    @Published var recognizedText: String = ""
-    let partialResultSubject = PassthroughSubject<String, Never>() // For live updates
-    let finalResultSubject = PassthroughSubject<String, STTError>()
+  // MARK: – State exposed to SwiftUI
+  @Published private(set) var isListening = false
+  @Published var recognizedText: String = ""
 
-    func setupSpeechRecognizer(languageCode: String) {
-        let locale = Locale(identifier: languageCode)
-        guard let recognizer = SFSpeechRecognizer(locale: locale) else {
-            finalResultSubject.send(completion: .failure(.unavailable))
-            return
+  // MARK: – Combine subjects
+  let partialResultSubject = PassthroughSubject<String,Never>()
+  let finalResultSubject   = PassthroughSubject<String,STTError>()
+
+  // Apple (as of iOS 17) does not expose a Swift enum for the “no speech”
+  // condition, only an integer code. 203 has been stable since iOS 10.
+  private let noSpeechDetectedCode = 203
+
+  // MARK: – Permission helpers
+  func requestPermission(_ completion:@escaping (Bool)->Void) {
+    SFSpeechRecognizer.requestAuthorization { auth in
+      DispatchQueue.main.async {
+        guard auth == .authorized else { completion(false); return }
+        AVAudioSession.sharedInstance().requestRecordPermission { micOK in
+          DispatchQueue.main.async { completion(micOK) }
         }
-        self.speechRecognizer = recognizer
-        self.speechRecognizer?.delegate = self // SFSpeechRecognizerDelegate for availability changes
-
-        if !recognizer.isAvailable {
-            finalResultSubject.send(completion: .failure(.unavailable))
-            return
-        }
-        print("NativeSTTService: Speech recognizer setup for \(languageCode). On-device: \(recognizer.supportsOnDeviceRecognition)")
+      }
     }
-    
-    func requestPermission(completion: @escaping (Bool) -> Void) {
-        SFSpeechRecognizer.requestAuthorization { authStatus in
-            DispatchQueue.main.async {
-                switch authStatus {
-                case .authorized:
-                    AVAudioSession.sharedInstance().requestRecordPermission { granted in
-                        DispatchQueue.main.async {
-                            completion(granted)
-                        }
-                    }
-                default:
-                    completion(false)
-                }
-            }
-        }
-    }
+  }
 
-    func startTranscribing(languageCode: String) {
-        guard !isListening else {
-            print("NativeSTTService: Already listening.")
-            return
-        }
-        
-        setupSpeechRecognizer(languageCode: languageCode) // Ensure it's set up for the current language
-        guard let speechRecognizer = self.speechRecognizer, speechRecognizer.isAvailable else {
-            print("NativeSTTService: Speech recognizer not available or not setup.")
-            finalResultSubject.send(completion: .failure(.unavailable))
-            return
-        }
-
-        if recognitionTask != nil {
-            recognitionTask?.cancel()
-            recognitionTask = nil
-        }
-
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch {
-            print("NativeSTTService: Audio session setup error: \(error)")
-            finalResultSubject.send(completion: .failure(.recognitionError(error)))
-            return
-        }
-
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let recognitionRequest = recognitionRequest else {
-            fatalError("Unable to create an SFSpeechAudioBufferRecognitionRequest object")
-        }
-        recognitionRequest.shouldReportPartialResults = true
-        if speechRecognizer.supportsOnDeviceRecognition {
-             recognitionRequest.requiresOnDeviceRecognition = true // Prioritize on-device
-        }
-
-
-        let inputNode = audioEngine.inputNode
-        recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            guard let self = self else { return }
-            var isFinal = false
-
-            if let result = result {
-                let bestTranscription = result.bestTranscription.formattedString
-                self.recognizedText = bestTranscription
-                self.partialResultSubject.send(bestTranscription) // Send partial result
-                isFinal = result.isFinal
-                print("NativeSTTService: Partial: \(bestTranscription)")
-            }
-
-            if error != nil || isFinal {
-                self.stopTranscribing() // Also stops audioEngine
-                if let error = error {
-                    print("NativeSTTService: Recognition error: \(error!)")
-                    if (error as NSError).code == SFSpeechErrorCode.noAudioDetected.rawValue {
-                        self.finalResultSubject.send(completion: .failure(.noAudioInput))
-                    } else {
-                        self.finalResultSubject.send(completion: .failure(.recognitionError(error)))
-                    }
-                } else if isFinal, let finalResultText = self.recognizedText, !finalResultText.isEmpty {
-                    print("NativeSTTService: Final: \(finalResultText)")
-                    self.finalResultSubject.send(finalResultText)
-                    self.finalResultSubject.send(completion: .finished) // Important to complete the subject
-                } else if isFinal && (self.recognizedText == nil || self.recognizedText.isEmpty) {
-                     print("NativeSTTService: Final result was empty.")
-                     self.finalResultSubject.send(completion: .failure(.noAudioInput)) // Or a different error
-                }
-            }
-        }
-
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-        // Check if format is valid (non-zero sample rate, etc.)
-        guard recordingFormat.sampleRate > 0 else {
-            print("NativeSTTService: Invalid recording format (sample rate is 0). Ensure microphone is available and permission granted.")
-            finalResultSubject.send(completion: .failure(.taskError("Invalid audio recording format.")))
-            stopTranscribing() // Clean up
-            return
-        }
-        
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { (buffer, _) in
-            self.recognitionRequest?.append(buffer)
-        }
-
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            DispatchQueue.main.async {
-                self.isListening = true
-                self.recognizedText = "Listening..." // Initial state for UI
-            }
-            print("NativeSTTService: Audio engine started, listening...")
-        } catch {
-            print("NativeSTTService: Audio engine couldn't start: \(error)")
-            finalResultSubject.send(completion: .failure(.recognitionError(error)))
-            stopTranscribing()
-        }
+  // MARK: – Recognizer configuration ------------------------------------------------
+  func setupSpeechRecognizer(languageCode: String) {
+    let locale = Locale(identifier: languageCode)
+    guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+      finalResultSubject.send(completion: .failure(.unavailable))
+      return
     }
 
-    func stopTranscribing() {
-        guard isListening else { return }
-        
-        DispatchQueue.main.async { // Ensure UI updates and engine stop are on main thread if they affect UI state
-            self.isListening = false
-        }
+    speechRecognizer = recognizer
+    recognizer.delegate = self
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0) // Important!
-        
-        recognitionRequest?.endAudio() // Tell SFSpeechAudioBufferRecognitionRequest that audio is finished
-        recognitionRequest = nil
-        
-        recognitionTask?.cancel() // Cancel if it's still running (e.g. user stopped early)
-        recognitionTask = nil
-        
-        print("NativeSTTService: Transcription stopped.")
-        
-        // Reset audio session (optional, depending on app flow)
-        // do {
-        //     try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        // } catch {
-        //     print("Audio session deactivation error: \(error)")
-        // }
+    guard recognizer.isAvailable else {
+      finalResultSubject.send(completion: .failure(.unavailable))
+      return
     }
-}
 
-extension NativeSTTService: SFSpeechRecognizerDelegate {
-    func speechRecognizer(_ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
-        if !available {
-            DispatchQueue.main.async {
-                self.isListening = false // Stop if it becomes unavailable
-                self.finalResultSubject.send(completion: .failure(.unavailable))
+    print("[NativeSTT] recognizer ready – lang: \(languageCode), on‑device: \(recognizer.supportsOnDeviceRecognition)")
+  }
+
+  // MARK: – Start / Stop ------------------------------------------------------------
+  func startTranscribing(languageCode: String) {
+    guard !isListening else { print("[NativeSTT] already listening"); return }
+
+    setupSpeechRecognizer(languageCode: languageCode)
+    guard let recognizer = speechRecognizer, recognizer.isAvailable else { return }
+
+    // Cancel any prior task
+    recognitionTask?.cancel(); recognitionTask = nil
+
+    do {
+      let sess = AVAudioSession.sharedInstance()
+      try sess.setCategory(.record, mode: .measurement, options: .duckOthers)
+      try sess.setActive(true, options: .notifyOthersOnDeactivation)
+    } catch {
+      finalResultSubject.send(completion: .failure(.recognitionError(error)))
+      return
+    }
+
+    // Build request & task ----------------------------------------------------------
+    recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+    guard let req = recognitionRequest else { fatalError("Could not create SFSpeechAudioBufferRecognitionRequest") }
+    req.shouldReportPartialResults = true
+    if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+
+    recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, err in
+      guard let self = self else { return }
+      var isFinal = false
+
+      if let r = result {
+        let text = r.bestTranscription.formattedString
+        self.recognizedText = text
+        self.partialResultSubject.send(text)
+        isFinal = r.isFinal
+        print("[NativeSTT] partial – \(text)")
+      }
+
+      // Terminal path (either error or final)
+      if err != nil || isFinal {
+        self.stopTranscribing()
+
+          if let e = err as NSError? {
+            print("[NativeSTT] error – domain: \(e.domain) code: \(e.code)")
+            if e.domain == "kAFAssistantErrorDomain" && e.code == self.noSpeechDetectedCode {
+              self.finalResultSubject.send(completion: .failure(.noAudioInput))
+            } else {
+              self.finalResultSubject.send(completion: .failure(.recognitionError(e)))
             }
-            print("NativeSTTService: Recognizer became unavailable.")
+            return
+          }
+
+
+        // Success path – final produced
+        if !self.recognizedText.isEmpty {
+          self.finalResultSubject.send(self.recognizedText)
+          self.finalResultSubject.send(completion: .finished)
+          print("[NativeSTT] final – \(self.recognizedText)")
         } else {
-            print("NativeSTTService: Recognizer became available.")
+          self.finalResultSubject.send(completion: .failure(.noAudioInput))
+          print("[NativeSTT] final empty – treated as noAudioInput")
         }
+      }
     }
+
+    // Microphone tap ---------------------------------------------------------------
+    let node   = audioEngine.inputNode
+    let format = node.outputFormat(forBus: 0)
+    guard format.sampleRate > 0 else {
+      finalResultSubject.send(completion: .failure(.taskError("Invalid microphone format")))
+      return
+    }
+
+    node.installTap(onBus: 0, bufferSize: 1024, format: format) { buf, _ in
+      self.recognitionRequest?.append(buf)
+    }
+
+    audioEngine.prepare()
+    do {
+      try audioEngine.start()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+          guard let self = self else { return }
+          if self.isListening && self.recognizedText.count > 3 {
+            print("[NativeSTT] ⏱ Timeout triggered – forcing final result")
+            self.finalResultSubject.send(self.recognizedText)
+            self.finalResultSubject.send(completion: .finished)
+            self.stopTranscribing()
+          }
+        }
+
+      DispatchQueue.main.async { self.isListening = true }
+      recognizedText = "Listening…"
+      print("[NativeSTT] audio engine started")
+    } catch {
+      finalResultSubject.send(completion: .failure(.recognitionError(error)))
+      stopTranscribing()
+    }
+  }
+
+  func stopTranscribing() {
+    guard isListening else { return }
+    DispatchQueue.main.async { self.isListening = false }
+
+    audioEngine.stop()
+    audioEngine.inputNode.removeTap(onBus: 0)
+
+    recognitionRequest?.endAudio(); recognitionRequest = nil
+    recognitionTask?.cancel();        recognitionTask  = nil
+    print("[NativeSTT] stopped")
+  }
+}
+
+// MARK: – Availability callbacks
+extension NativeSTTService: SFSpeechRecognizerDelegate {
+  func speechRecognizer(_ recognizer:SFSpeechRecognizer, availabilityDidChange available: Bool) {
+    if !available {
+      DispatchQueue.main.async { self.isListening = false }
+      finalResultSubject.send(completion: .failure(.unavailable))
+      print("[NativeSTT] recognizer became unavailable")
+    } else {
+      print("[NativeSTT] recognizer available again")
+    }
+  }
 }

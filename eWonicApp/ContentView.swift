@@ -54,7 +54,7 @@ struct ContentView: View {
                         .padding(.top, 5)
                         
                     } else {
-                        PeerDiscoveryView(viewModel: viewModel)
+                        PeerDiscoveryView(session: viewModel.multipeerSession)
                     }
                 }
                 Spacer()
@@ -263,72 +263,71 @@ struct RecordControlView: View {
 
 
 struct PeerDiscoveryView: View {
-    @ObservedObject var viewModel: TranslationViewModel
+  @ObservedObject var session: MultipeerSession   // 👈 watch the session itself
 
-    var body: some View {
-        VStack(spacing: 15) {
-            Text("Connect to a Peer")
-                .font(.title2.weight(.semibold))
-                .padding(.bottom)
+  var body: some View {
+    VStack(spacing: 15) {
+      Text("Connect to a Peer")
+        .font(.title2.weight(.semibold))
+        .padding(.bottom)
 
-            HStack(spacing: 20) {
-                Button {
-                    viewModel.multipeerSession.stopBrowsing()
-                    viewModel.multipeerSession.startHosting()
-                } label: {
-                    Label("Host Session", systemImage: "antenna.radiowaves.left.and.right")
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.purple.opacity(0.2))
-                        .cornerRadius(10)
-                }
-                
-                Button {
-                    viewModel.multipeerSession.stopHosting()
-                    viewModel.multipeerSession.startBrowsing()
-                } label: {
-                    Label("Join Session", systemImage: "magnifyingglass")
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.cyan.opacity(0.2))
-                        .cornerRadius(10)
-                }
-            }
-            .buttonStyle(.bordered)
-
-            if !viewModel.multipeerSession.discoveredPeers.isEmpty {
-                Text("Found Peers:").font(.headline).padding(.top)
-                List(viewModel.multipeerSession.discoveredPeers, id: \.self) { peer in
-                    Button(peer.displayName) {
-                        viewModel.multipeerSession.invitePeer(peer)
-                    }
-                }
-                .listStyle(.plain)
-                .frame(maxHeight: 200) // Limit height
-            } else if viewModel.multipeerSession.serviceBrowser.isBrowsingForPeers || viewModel.multipeerSession.serviceAdvertiser.isAdvertisingPeer {
-                HStack {
-                    ProgressView()
-                    Text(viewModel.multipeerSession.serviceBrowser.isBrowsingForPeers ? "Searching for hosts..." : "Waiting for connections...")
-                }
-                .padding(.top)
-                .foregroundColor(.gray)
-            }
-            
-            if viewModel.multipeerSession.connectionState != .notConnected ||
-               viewModel.multipeerSession.serviceBrowser.isBrowsingForPeers ||
-               viewModel.multipeerSession.serviceAdvertiser.isAdvertisingPeer {
-                Button("Stop Connection Activities") {
-                    viewModel.multipeerSession.disconnect() // This will also stop hosting/browsing internally
-                    viewModel.multipeerSession.stopBrowsing()
-                    viewModel.multipeerSession.stopHosting()
-                }
-                .padding(.top)
-                .buttonStyle(.bordered)
-                .tint(.red)
-            }
+      HStack(spacing: 20) {
+        Button {
+          session.stopBrowsing()
+          session.startHosting()
+        } label: {
+          Label("Host Session", systemImage: "antenna.radiowaves.left.and.right")
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(Color.purple.opacity(0.2))
+            .cornerRadius(10)
         }
-        .padding()
+
+        Button {
+          session.stopHosting()
+          session.startBrowsing()
+        } label: {
+          Label("Join Session", systemImage: "magnifyingglass")
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(Color.cyan.opacity(0.2))
+            .cornerRadius(10)
+        }
+      }
+      .buttonStyle(.bordered)
+
+      if !session.discoveredPeers.isEmpty {
+        Text("Found Peers:")
+          .font(.headline)
+          .padding(.top)
+
+        List(session.discoveredPeers, id: \.self) { peer in
+          Button(peer.displayName) { session.invitePeer(peer) }
+        }
+        .listStyle(.plain)
+        .frame(maxHeight: 200)
+      } else if session.isBrowsing || session.isAdvertising {
+        HStack {
+          ProgressView()
+          Text(session.isBrowsing
+               ? "Searching for hosts..." : "Waiting for connections...")
+        }
+        .padding(.top)
+        .foregroundColor(.gray)
+      }
+
+      if session.connectionState != .notConnected ||
+         session.isBrowsing || session.isAdvertising {
+        Button("Stop Connection Activities") {
+          session.disconnect()
+        }
+        .padding(.top)
+        .buttonStyle(.bordered)
+        .tint(.red)
+      }
     }
+    .padding()
+  }
 }
 
 struct ContentView_Previews: PreviewProvider {
