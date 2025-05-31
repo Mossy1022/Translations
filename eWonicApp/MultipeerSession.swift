@@ -5,6 +5,7 @@ import Combine
 private let SERVICE_TYPE = "ewonic-xlat"
 
 final class MultipeerSession: NSObject, ObservableObject {
+  static let peerLimit = 6
   // MARK: – Public state
   @Published private(set) var connectedPeers: [MCPeerID] = []
   @Published private(set) var discoveredPeers: [MCPeerID] = []
@@ -90,8 +91,9 @@ final class MultipeerSession: NSObject, ObservableObject {
     }
 
     do {
-      try session.send(data, toPeers: session.connectedPeers, with: .reliable)
-      print("📤 Sent \(data.count) bytes → \(session.connectedPeers.map { $0.displayName })")
+      let compressed = try (data as NSData).compressed(using: .zlib) as Data
+      try session.send(compressed, toPeers: session.connectedPeers, with: .reliable)
+      print("📤 Sent \(compressed.count) bytes → \(session.connectedPeers.map { $0.displayName })")
     } catch {
       print("❌ session.send error: \(error.localizedDescription)")
     }
@@ -130,7 +132,10 @@ extension MultipeerSession: MCSessionDelegate {
 
   func session(_ s: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
     print("📨 Received \(data.count) bytes from \(peerID.displayName)")
-    guard let msg = try? JSONDecoder().decode(MessageData.self, from: data) else {
+    guard
+      let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data,
+      let msg = try? JSONDecoder().decode(MessageData.self, from: decompressed)
+    else {
       print("❌ Could not decode MessageData")
       return
     }
@@ -152,7 +157,8 @@ extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
                   didReceiveInvitationFromPeer peerID: MCPeerID,
                   withContext _:Data?,
                   invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-    invitationHandler(self.connectedPeers.isEmpty, self.session)
+    let accept = self.connectedPeers.count < MultipeerSession.peerLimit
+    invitationHandler(accept, accept ? self.session : nil)
   }
 
   func advertiser(_:MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {

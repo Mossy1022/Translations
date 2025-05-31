@@ -6,8 +6,6 @@
 //
 
 import UIKit
-import ObjectiveC.runtime
-
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
@@ -17,27 +15,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Override point for customization after application launch.
         print(Bundle.main.infoDictionary?.keys.sorted() ?? [])
         
-        self.printAllTranslationClasses()
+        AudioSessionManager.shared.configure()
 
         return true
-    }
-    
-    func printAllTranslationClasses() {
-      var count: UInt32 = 0
-
-      // Allocate and cast to UnsafeMutablePointer<AnyClass>
-      guard let classListRaw = objc_copyClassList(&count) else { return }
-      let classList = UnsafeBufferPointer(start: classListRaw, count: Int(count))
-
-      for cls in classList {
-        let name = NSStringFromClass(cls)
-        if name.lowercased().contains("translate") {
-          print("🔍 Class: \(name)")
-        }
-      }
-
-      // Cast to UnsafeMutableRawPointer before freeing
-      free(UnsafeMutableRawPointer(mutating: classListRaw))
     }
 
     // MARK: UISceneSession Lifecycle

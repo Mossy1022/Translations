@@ -57,7 +57,7 @@ struct ContentView: View {
                         PeerDiscoveryView(session: viewModel.multipeerSession)
                     }
                 }
-                Spacer()
+                Spacer() 
             }
             .navigationBarHidden(true)
             .onAppear {

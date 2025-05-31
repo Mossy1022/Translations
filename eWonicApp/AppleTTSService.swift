@@ -32,16 +32,7 @@ final class AppleTTSService: NSObject, ObservableObject {
         print("🔈 Available voice: \(voice.identifier), lang: \(voice.language), name: \(voice.name)")
       }
 
-      // 🔊 Reset the audio session to ensure playback works after STT
-      let session = AVAudioSession.sharedInstance()
-      do {
-        try session.setActive(false, options: .notifyOthersOnDeactivation) // ⛔ deactivate previous STT mode
-        try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try session.setActive(true)
-        print("✅ Audio session switched to playback")
-      } catch {
-        print("❌ Audio session config failed: \(error)")
-      }
+      AudioSessionManager.shared.begin()
 
       let utterance = AVSpeechUtterance(string: text)
       utterance.voice = AVSpeechSynthesisVoice(language: languageCode) ?? AVSpeechSynthesisVoice(language: "en-US")
@@ -62,6 +53,7 @@ extension AppleTTSService: AVSpeechSynthesizerDelegate {
   func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                          didFinish utterance: AVSpeechUtterance) {
     isSpeaking = false
+    AudioSessionManager.shared.end()
     finishedSubject.send(())
   }
 }
