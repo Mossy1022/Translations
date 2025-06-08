@@ -14,13 +14,12 @@ extension STTError: Equatable {
   public static func == (lhs: STTError, rhs: STTError) -> Bool {
     switch (lhs, rhs) {
     case (.unavailable,      .unavailable),
-         (.permissionDenied, .permissionDenied),
-         (.noAudioInput,     .noAudioInput):
+         (.permissionDenied, .permissionDenied):
       return true
     case (.taskError(let l), .taskError(let r)):
       return l == r
     case (.recognitionError, .recognitionError):
-      return true          // we don’t compare the embedded Error
+      return true          // we don’t compare embedded Error values
     default:
       return false
     }
@@ -48,6 +47,8 @@ final class TranslationViewModel: ObservableObject {
   @Published var isProcessing            = false
   @Published var permissionStatusMessage = "Checking permissions…"
   @Published var hasAllPermissions       = false
+    
+  private var liveTranslationTask: Task<Void, Never>?
 
   // Language selection
   @Published var myLanguage: String = "en-US" {
@@ -96,37 +97,33 @@ final class TranslationViewModel: ObservableObject {
       .assign(to: &$connectionStatus)
 
     // ––––– STT partials –––––
-    sttService.partialResultSubject
-      .receive(on: RunLoop.main)
-      .sink { [weak self] txt in
-        guard let self else { return }
-        myTranscribedText = "Listening: \(txt)…"
-        sendTextToPeer(originalText: txt, isFinal: false)
-      }
-      .store(in: &cancellables)
-
-    // ––––– STT finals / errors –––––
-    sttService.finalResultSubject
-      .receive(on: RunLoop.main)
-      .sink(receiveCompletion: { [weak self] comp in
-        guard let self else { return }
-        isProcessing = false
-        if case .failure(let e) = comp {
-          myTranscribedText = "STT Error: \(e.localizedDescription)"
-          if e == .noAudioInput { myTranscribedText = "Didn't hear that. Try again." }
+      sttService.partialResultSubject
+        .receive(on: RunLoop.main)
+        .sink { [weak self] txt in
+          guard let self else { return }
+          myTranscribedText = "Listening: \(txt)…"
+          sendTextToPeer(originalText: txt, isFinal: false)
         }
-      }, receiveValue: { [weak self] txt in
-        guard let self else { return }
-        myTranscribedText = "You said: \(txt)"
-        sendTextToPeer(originalText: txt, isFinal: true)
-      })
-      .store(in: &cancellables)
+        .store(in: &cancellables)
+
+      // ─–––– STT finals –––––
+      sttService.finalResultSubject
+        .receive(on: RunLoop.main)
+        .sink { [weak self] txt in
+          guard let self else { return }
+          isProcessing = false
+          myTranscribedText = "You said: \(txt)"
+          sendTextToPeer(originalText: txt, isFinal: true)
+        }
+        .store(in: &cancellables)
+
 
     // ––––– TTS finished –––––
     ttsService.finishedSubject
       .receive(on: RunLoop.main)
       .sink { [weak self] in self?.isProcessing = false }
       .store(in: &cancellables)
+      
   }
 
   // ────────────────────────────────
@@ -152,25 +149,62 @@ final class TranslationViewModel: ObservableObject {
   // ────────────────────────────────
   // MARK: STT control
   // ────────────────────────────────
-  func startListening() {
-    guard hasAllPermissions else { myTranscribedText = "Missing permissions."; return }
-    guard multipeerSession.connectionState == .connected else {
-      myTranscribedText = "Not connected."
-      return
-    }
-    guard !sttService.isListening else { return }
+    @available(iOS 18.4, *)
+    func startListening() {
+        liveTranslationTask?.cancel()
+            guard hasAllPermissions else {
+                myTranscribedText = "Missing permissions."
+                return
+            }
+            guard multipeerSession.connectionState == .connected else {
+                myTranscribedText = "Not connected."
+                return
+            }
+            guard !sttService.isListening else { return }
 
-    isProcessing = true
-    myTranscribedText = "Listening…"
-    peerSaidText = ""
-    translatedTextForMeToHear = ""
+            isProcessing = true
+            myTranscribedText = "Listening…"
+            peerSaidText = ""
+            translatedTextForMeToHear = ""
 
-    sttService.startTranscribing(languageCode: myLanguage)
-  }
+            // Actually start speech recognition
+            sttService.startTranscribing(languageCode: myLanguage)
 
-  func stopListening() {
-    if sttService.isListening { sttService.stopTranscribing() }
-  }
+            // ── ④ Immediately kick off streaming translation task
+            let tokenStream = sttService.partialTokensStream()
+            liveTranslationTask = Task {
+                do {
+                    // Consume the stream of partial‐speech tokens and forward to Apple’s translator:
+                    for try await translatedToken in try await Apple18StreamingTranslationService
+                            .shared
+                            .stream(tokenStream, from: myLanguage, to: peerLanguage) {
+                        // Each `translatedToken` is a piece of text as soon as it’s available.
+                        // Dispatch back to the main actor to update UI:
+                        await MainActor.run {
+                            // Append each new token so the UI shows gradual build‐up:
+                            if translatedTextForMeToHear.isEmpty {
+                                translatedTextForMeToHear = translatedToken
+                            } else {
+                                translatedTextForMeToHear += translatedToken
+                            }
+                        }
+                    }
+                } catch {
+                    // If streaming fails (e.g. iOS < 18.4 at runtime), fallback to single-shot:
+                    await MainActor.run {
+                        translatedTextForMeToHear = "Streaming Translation Unavailable"
+                        isProcessing = false
+                    }
+                }
+            }
+        }
+
+    func stopListening() {
+            if sttService.isListening {
+                sttService.stopTranscribing()
+                isProcessing = false
+            }
+        }
 
   // ────────────────────────────────
   // MARK: Messaging helpers
@@ -222,8 +256,9 @@ final class TranslationViewModel: ObservableObject {
     sttService.recognizedText = ""
   }
 
-  deinit {
-    cancellables.forEach { $0.cancel() }
-    Task { @MainActor in multipeerSession.disconnect() }
-  }
+    deinit {
+        liveTranslationTask?.cancel()          // 🔴 add this
+        cancellables.forEach { $0.cancel() }
+        Task { @MainActor in multipeerSession.disconnect() }
+    }
 }

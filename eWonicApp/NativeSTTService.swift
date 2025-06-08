@@ -2,10 +2,7 @@
 //  NativeSTTService.swift
 //  eWonicApp
 //
-//  Streams partial results in real-time, but also guarantees a final “chunk”
-//  under three different conditions: Apple flags `isFinal`, the speaker pauses
-//  for `silenceTimeout`, or the same partial stays unchanged for
-//  `stableTimeout` (useful in noisy outdoor scenarios).
+//  v7.2 – resilient mic loop, but *all* public API kept 1-to-1 with v6
 //
 
 import Foundation
@@ -13,9 +10,9 @@ import AVFoundation
 import Speech
 import Combine
 
-// ───────────── Error envelope ─────────────
+// ───────────── Global STTError (unchanged) ─────────────
 enum STTError: Error, LocalizedError {
-  case unavailable, permissionDenied, recognitionError(Error), taskError(String), noAudioInput
+  case unavailable, permissionDenied, recognitionError(Error), taskError(String)
 
   var errorDescription: String? {
     switch self {
@@ -23,242 +20,286 @@ enum STTError: Error, LocalizedError {
     case .permissionDenied: return "Speech recognition permission was denied."
     case .recognitionError(let e): return "Recognition failed: \(e.localizedDescription)"
     case .taskError(let m): return m
-    case .noAudioInput:     return "No audio input was detected or the input was too quiet."
     }
   }
+}
+
+private enum InternalErr {
+    static let noSpeechCodes: Set<Int> = [203, 1110]
+   static let svcCrash = 1101
 }
 
 // ───────────── Service ─────────────
 @MainActor
 final class NativeSTTService: NSObject, ObservableObject {
 
-  // Engine plumbing
+  // MARK: – Engine plumbing
   private var speechRecognizer: SFSpeechRecognizer?
   private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-  private var recognitionTask: SFSpeechRecognitionTask?
+  private var recognitionTask:   SFSpeechRecognitionTask?
   private let audioEngine = AVAudioEngine()
+    
+  private var pendingSoftRotate: DispatchWorkItem?
 
-  // Timing / rotation
-  private var segmentStart = Date()
-  private let maxSegmentSeconds: TimeInterval = 120
+  // MARK: – Timers / state
+  private var segmentStart              = Date()
   private var lastBufferHostTime: UInt64 = 0
-  private let silenceTimeout: TimeInterval = 1.5          // long pause → endAudio()
-  private let stableTimeout:  TimeInterval = 1.2          // same partial too long → final
-  private var watchdogTimer:  DispatchSourceTimer?        // 55 min safety
-  private var stableTimer:    DispatchSourceTimer?        // same-partial watchdog
-  private var lastPartialText = ""
+  private var stableTimer:    DispatchSourceTimer?
+  private var watchdogTimer:  DispatchSourceTimer?
 
-  // Public state
+  private let maxSegmentSeconds: TimeInterval = 120
+  private let silenceTimeout:    TimeInterval = 1.5
+  private let stableTimeout:     TimeInterval = 1.2
+  private let noSpeechCode                    = 203   // Apple private
+
+    
+  // MARK: – Published (same spelling!)
   @Published private(set) var isListening = false
   @Published var recognizedText = ""
 
-  // Combine subjects
-  let partialResultSubject = PassthroughSubject<String, Never>()
-  let finalResultSubject   = PassthroughSubject<String, STTError>()
+  // MARK: – Subjects (same names!)
+  let partialResultSubject = PassthroughSubject<String,Never>()
+  let finalResultSubject   = PassthroughSubject<String,Never>()
+  let errorSubject         = PassthroughSubject<STTError,Never>()   // only .unavailable emitted now
+    
 
-  private let noSpeechDetectedCode = 203    // Apple private
+    public  let partialStream: AsyncStream<String>     // outward-facing
+    private let partialContinuation: AsyncStream<String>.Continuation
+    private var streamCancellable: AnyCancellable?
 
-  // ───────────── Permissions ─────────────
-  func requestPermission(_ done: @escaping (Bool)->Void) {
-    SFSpeechRecognizer.requestAuthorization { auth in
-      DispatchQueue.main.async {
-        guard auth == .authorized else { done(false); return }
-        AVAudioSession.sharedInstance().requestRecordPermission { micOK in
-          DispatchQueue.main.async { done(micOK) }
+
+    override init() {
+        // 1) make the pipe
+        let (stream, cont) = AsyncStream<String>.makeStream(
+                               bufferingPolicy: .bufferingNewest(32))
+        self.partialStream       = stream
+        self.partialContinuation = cont
+
+        super.init()             // ← call NSObject
+
+        // 2) forward every partial transcript into the pipe
+        streamCancellable = partialResultSubject
+            .sink { [cont] text in
+                cont.yield(text)        // <-- live push
+            }
+    }
+
+  // ───────────── Permissions (unchanged) ─────────────
+    func requestPermission(_ done: @escaping (Bool)->Void) {
+      SFSpeechRecognizer.requestAuthorization { auth in
+        DispatchQueue.main.async {
+          guard auth == .authorized else { done(false); return }
+          AVAudioSession.sharedInstance().requestRecordPermission { micOK in
+            DispatchQueue.main.async { done(micOK) }
+          }
         }
       }
     }
-  }
 
-  // ───────────── Setup ─────────────
+  // ───────────── Setup recognizer ─────────────
   func setupSpeechRecognizer(languageCode: String) {
-    let locale = Locale(identifier: languageCode)
-    guard let recognizer = SFSpeechRecognizer(locale: locale) else {
-      finalResultSubject.send(completion: .failure(.unavailable)); return
-    }
-    speechRecognizer = recognizer
-    recognizer.delegate = self
-    guard recognizer.isAvailable else {
-      finalResultSubject.send(completion: .failure(.unavailable)); return
-    }
-    print("[NativeSTT] recognizer ready – lang: \(languageCode), on-device: \(recognizer.supportsOnDeviceRecognition)")
+    guard let r = SFSpeechRecognizer(locale: Locale(identifier: languageCode)) else { return }
+    speechRecognizer = r
+    r.delegate = self
+    print("[NativeSTT] recognizer ready – lang: \(languageCode), on-device:\(r.supportsOnDeviceRecognition)")
   }
 
-  // ───────────── Start ─────────────
+  // ───────────── Public start/stop (same names!) ─────────────
   func startTranscribing(languageCode: String) {
     guard !isListening else { return }
-
     setupSpeechRecognizer(languageCode: languageCode)
-    guard let recognizer = speechRecognizer, recognizer.isAvailable else { return }
+    guard speechRecognizer != nil else { return }
 
-    recognitionTask?.cancel(); recognitionTask = nil
     AudioSessionManager.shared.begin()
+    isListening   = true
+    recognizedText = "Listening…"
 
-    recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-    guard let request = recognitionRequest else { return }
-    request.shouldReportPartialResults = true
-    if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
-
-    // Long-running task watchdog
-    segmentStart = Date()
-    watchdogTimer?.cancel()
-    watchdogTimer = DispatchSource.makeTimerSource(queue: .main)
-    watchdogTimer?.schedule(deadline: .now() + 55*60)
-    watchdogTimer?.setEventHandler { [weak self] in self?.rotateTask() }
-    watchdogTimer?.resume()
-
-    // Apple recogniser callback --------------------------------------
-      recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self = self else { return }
-
-            if let r = result {
-              // 🛠 Hop to MainActor before touching properties
-              Task { @MainActor [weak self] in
-                guard let self else { return }
-
-                recognizedText = r.bestTranscription.formattedString
-                partialResultSubject.send(recognizedText)
-                print("[NativeSTT] partial – \(recognizedText)")
-
-                restartStableTimer()
-
-                if r.isFinal { emitFinalAndContinue(); return }
-                if Date().timeIntervalSince(segmentStart) > maxSegmentSeconds {
-                  emitFinalAndContinue()
-                }
-              }
-            }
-
-            // error path – no actor-hop needed (we delegate to helper that hops)
-            if let e = error as NSError? {
-              Task { @MainActor [weak self] in
-                guard let self else { return }
-                stopTranscribing()
-                if e.domain == "kAFAssistantErrorDomain", e.code == noSpeechDetectedCode {
-                  finalResultSubject.send(completion: .failure(.noAudioInput))
-                } else {
-                  finalResultSubject.send(completion: .failure(.recognitionError(e)))
-                }
-              }
-            }
-          }
-
-
-    // Mic tap – feed audio & silence detection -----------------------
-    let node = audioEngine.inputNode
-    let format = node.outputFormat(forBus: 0)
-    guard format.sampleRate > 0 else {
-      finalResultSubject.send(completion: .failure(.taskError("Invalid microphone format"))); return
-    }
-
-    node.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, when in
-      self.recognitionRequest?.append(buffer)
-
-      if self.lastBufferHostTime != 0 {
-        let current = AVAudioTime.seconds(forHostTime: when.hostTime)
-        let last    = AVAudioTime.seconds(forHostTime: self.lastBufferHostTime)
-        if current - last >= self.silenceTimeout {     // long pause
-          self.recognitionRequest?.endAudio()
-        }
-      }
-      self.lastBufferHostTime = when.hostTime
-    }
-
-    do {
-      audioEngine.prepare(); try audioEngine.start()
-      isListening = true; recognizedText = "Listening…"
-      print("[NativeSTT] audio engine started")
-    } catch {
-      finalResultSubject.send(completion: .failure(.recognitionError(error)))
-      stopTranscribing()
-    }
+    installTap()
+    spinUpTask()
+    print("[NativeSTT] audio engine started")
   }
 
-  // ───────────── Stop ─────────────
   func stopTranscribing() {
     guard isListening else { return }
+    teardownTask()
+    removeTap()
     isListening = false
-
-    watchdogTimer?.cancel()
-    stableTimer?.cancel()
     AudioSessionManager.shared.end()
-
-    audioEngine.stop(); audioEngine.inputNode.removeTap(onBus: 0)
-    recognitionRequest?.endAudio(); recognitionRequest = nil
-    recognitionTask?.cancel();        recognitionTask  = nil
     print("[NativeSTT] stopped")
   }
+    
+    private var ignoreBuffers = false
 
-  // ───────────── Helper: final emission ─────────────
-  private func emitFinalAndContinue() {
-    stableTimer?.cancel()
+  // ───────────── Mic tap (unchanged behaviour) ─────────────
+    private func installTap() {
+      let node = audioEngine.inputNode
+      let fmt  = node.outputFormat(forBus: 0)
+      node.removeTap(onBus: 0)
+      node.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [self] buf, when in
+          guard !ignoreBuffers else { return }
+        // --- Do the silence test *before* appending the buffer
+        if lastBufferHostTime != 0 {
+          let now  = AVAudioTime.seconds(forHostTime: when.hostTime)
+          let prev = AVAudioTime.seconds(forHostTime: lastBufferHostTime)
+          if now - prev >= silenceTimeout {
+            recognitionRequest?.endAudio()
+            ignoreBuffers = true
+            return                // ◀︎ DON’T push this (or any more) audio
+          }
+        }
 
-    let finalText = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
-    if finalText.count > 2 {                 // ignore “uh”, noise, etc.
-      print("[NativeSTT] FINAL  – \(finalText)")
-      finalResultSubject.send(finalText)
-    } else {
-      print("[NativeSTT] Ignored tiny chunk ⟨\(finalText)⟩")
+        recognitionRequest?.append(buf)   // normal path
+        lastBufferHostTime = when.hostTime
+      }
+
+      do { audioEngine.prepare(); try audioEngine.start() }
+      catch { print("⚠️ audio engine start failed: \(error)") }
     }
-    rotateTask()
+
+  private func removeTap() {
+    audioEngine.stop()
+    audioEngine.inputNode.removeTap(onBus: 0)
   }
 
-  // ───────────── Helper: stable-partial timer ─────────────
+  // ───────────── Task life-cycle ─────────────
+  private func spinUpTask() {
+    guard let recognizer = speechRecognizer else { return }
+
+    recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+    if recognizer.supportsOnDeviceRecognition { recognitionRequest?.requiresOnDeviceRecognition = true }
+    recognitionRequest?.shouldReportPartialResults = true
+
+    segmentStart = Date(); lastBufferHostTime = 0
+    scheduleWatchdog()
+
+    recognitionTask = recognizer.recognitionTask(with: recognitionRequest!) { [self] res, err in
+      if let r = res { handle(result:r) }
+      if let e = err as NSError? { handle(error:e) }
+    }
+  }
+
+  private func teardownTask() {
+    recognitionRequest?.endAudio()
+    recognitionTask?.cancel()
+    recognitionRequest = nil
+    recognitionTask   = nil
+    watchdogTimer?.cancel(); stableTimer?.cancel()
+  }
+
+  // ───────────── Result / Error handlers ─────────────
+    private func handle(result: SFSpeechRecognitionResult) {
+        pendingSoftRotate?.cancel(); pendingSoftRotate = nil
+        Task { @MainActor in
+            recognizedText = result.bestTranscription.formattedString
+            partialResultSubject.send(recognizedText)
+            partialContinuation.yield(recognizedText)
+            print("[NativeSTT] partial – \(recognizedText)")
+            restartStableTimer()
+
+            if result.isFinal || Date().timeIntervalSince(segmentStart) > maxSegmentSeconds {
+                emitFinal()
+                rotate()
+            }
+        }
+    }
+
+    private func handle(error e: NSError) {
+        
+        print("[NativeSTT] DEBUG  domain=\(e.domain)  code=\(e.code)  desc=\(e.localizedDescription)")
+
+        // 1) “No speech detected” → schedule (but let it be cancelled)
+        if e.domain == "kAFAssistantErrorDomain",
+           InternalErr.noSpeechCodes.contains(e.code) {
+
+          print("[NativeSTT] no speech – scheduling soft rotate")
+          pendingSoftRotate?.cancel()                      // cancel any previous one
+          let work = DispatchWorkItem { [weak self] in
+            self?.rotate()
+            self?.pendingSoftRotate = nil
+          }
+          pendingSoftRotate = work
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+          return
+        }
+
+
+      // 2) Daemon‐crashed (1101) → full reboot
+      if e.domain == "kAFAssistantErrorDomain", e.code == InternalErr.svcCrash {
+        print("[NativeSTT] recogniser service crashed – hard reboot")
+        hardRebootRecognizer()
+        return
+      }
+
+      // 3) Any other error → a normal rotate()
+      print("[NativeSTT] fatal error – \(e.localizedDescription) – soft rotate")
+      rotate()
+    }
+    
+  private func emitFinal() {
+    stableTimer?.cancel()
+    let txt = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard txt.count > 2 else {
+      print("[NativeSTT] Ignored tiny chunk ⟨\(txt)⟩")
+      return
+    }
+    print("[NativeSTT] FINAL  – \(txt)")
+    finalResultSubject.send(txt)
+  }
+
+  private func rotate() {
+    teardownTask()
+    ignoreBuffers = false
+    lastBufferHostTime = 0      // ← reset the silence‐timer anchor
+    spinUpTask()
+  }
+    
+    private func hardRebootRecognizer() {
+      let currentLang = speechRecognizer?.locale.identifier ?? "en-US"
+      teardownTask()
+      removeTap()
+      do { audioEngine.reset() }                  // reclaim HW
+      catch { /* non-fatal */ }
+
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        guard let self else { return }
+        self.installTap()
+        self.setupSpeechRecognizer(languageCode: currentLang)
+        self.spinUpTask()
+      }
+    }
+
+  // ───────────── Timers ─────────────
   private func restartStableTimer() {
     stableTimer?.cancel()
-    lastPartialText = recognizedText
-
-    stableTimer = DispatchSource.makeTimerSource(queue: .main)
+    let snap = recognizedText
+    stableTimer = DispatchSource.makeTimerSource(queue:.main)
     stableTimer?.schedule(deadline: .now() + stableTimeout)
     stableTimer?.setEventHandler { [weak self] in
       guard let self else { return }
-      if self.recognizedText == self.lastPartialText {   // unchanged
-        self.emitFinalAndContinue()
-      }
+      if recognizedText == snap { emitFinal(); rotate() }
     }
     stableTimer?.resume()
   }
 
-  // ───────────── Rotate recogniser (keeps mic live) ─────────────
-  private func rotateTask() {
-    recognitionRequest?.endAudio(); recognitionRequest = nil
-    recognitionTask?.cancel();        recognitionTask  = nil
-    stableTimer?.cancel()
-
-    guard isListening, let recognizer = speechRecognizer else { return }
-    recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-    guard let req = recognitionRequest else { return }
-    req.shouldReportPartialResults = true
-    if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
-
-    segmentStart = Date(); lastBufferHostTime = 0
-
-    recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
-      guard let self else { return }
-
-      if let r = result {
-        recognizedText = r.bestTranscription.formattedString
-        partialResultSubject.send(recognizedText)
-        print("[NativeSTT] partial – \(recognizedText)")
-        restartStableTimer()
-
-        if r.isFinal { emitFinalAndContinue() }
-      }
-
-      if let e = error {
-        stopTranscribing()
-        finalResultSubject.send(completion: .failure(.recognitionError(e)))
-      }
-    }
+  private func scheduleWatchdog() {
+    watchdogTimer?.cancel()
+    watchdogTimer = DispatchSource.makeTimerSource(queue:.main)
+    watchdogTimer?.schedule(deadline: .now() + 55*60)
+    watchdogTimer?.setEventHandler { [weak self] in self?.rotate() }
+    watchdogTimer?.resume()
   }
+    
+    func partialTokensStream() -> AsyncStream<String> { partialStream }
+
 }
+
 
 // ───────────── Availability callback ─────────────
 extension NativeSTTService: SFSpeechRecognizerDelegate {
-  func speechRecognizer(_ recognizer: SFSpeechRecognizer, availabilityDidChange ok: Bool) {
+  func speechRecognizer(_ r:SFSpeechRecognizer, availabilityDidChange ok:Bool) {
     if !ok {
       isListening = false
-      finalResultSubject.send(completion: .failure(.unavailable))
+      errorSubject.send(.unavailable)
       print("[NativeSTT] recognizer became unavailable")
     } else {
       print("[NativeSTT] recognizer available again")

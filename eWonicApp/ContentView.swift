@@ -7,6 +7,7 @@
 
 import SwiftUI
 
+@available(iOS 18.4, *)
 struct ContentView: View {
     @StateObject private var viewModel = TranslationViewModel()
 
@@ -332,6 +333,10 @@ struct PeerDiscoveryView: View {
 
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
-        ContentView()
+        if #available(iOS 18.4, *) {
+            ContentView()
+        } else {
+            // Fallback on earlier versions
+        }
     }
 }

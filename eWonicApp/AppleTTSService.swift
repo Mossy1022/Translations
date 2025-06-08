@@ -28,9 +28,9 @@ final class AppleTTSService: NSObject, ObservableObject {
       print("🗣 Speaking: '\(text)' in \(languageCode)")
       print("🔊 Voice available: \(String(describing: AVSpeechSynthesisVoice(language: languageCode)))")
 
-      for voice in AVSpeechSynthesisVoice.speechVoices() {
-        print("🔈 Available voice: \(voice.identifier), lang: \(voice.language), name: \(voice.name)")
-      }
+//      for voice in AVSpeechSynthesisVoice.speechVoices() {
+//        print("🔈 Available voice: \(voice.identifier), lang: \(voice.language), name: \(voice.name)")
+//      }
 
       AudioSessionManager.shared.begin()
 

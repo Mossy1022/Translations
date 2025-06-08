@@ -18,13 +18,18 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             guard let windowScene = (scene as? UIWindowScene) else { return }
             
             // Create the SwiftUI view that provides the window contents
-            let contentView = ContentView()
+            if #available(iOS 18.4, *) {
+                let contentView = ContentView()
+                // Create the window and set the root view controller to the ContentView
+                let window = UIWindow(windowScene: windowScene)
+                window.rootViewController = UIHostingController(rootView: contentView)
+                self.window = window
+                window.makeKeyAndVisible()
+            } else {
+                // Fallback on earlier versions
+            }
 
-            // Create the window and set the root view controller to the ContentView
-            let window = UIWindow(windowScene: windowScene)
-            window.rootViewController = UIHostingController(rootView: contentView)
-            self.window = window
-            window.makeKeyAndVisible()
+         
         }
 
     func sceneDidDisconnect(_ scene: UIScene) {
