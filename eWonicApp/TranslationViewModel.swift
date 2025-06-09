@@ -96,30 +96,56 @@ final class TranslationViewModel: ObservableObject {
       }
       .assign(to: &$connectionStatus)
 
+    multipeerSession.$connectionState
+      .receive(on: RunLoop.main)
+      .sink { [weak self] state in
+        guard let self else { return }
+        switch state {
+        case .connected:
+          if #available(iOS 18.4, *) { startListening() }
+        default:
+          if #available(iOS 18.4, *) { stopListening() }
+        }
+      }
+      .store(in: &cancellables)
+
       (sttService as! AzureSpeechTranslationService).partialResult
-          .receive(on: RunLoop.main)
-          .sink { [weak self] txt in
-              self?.translatedTextForMeToHear = txt
-              self?.sendTextToPeer(originalText: txt, isFinal: false)
-          }
-          .store(in: &cancellables)
+        .receive(on: RunLoop.main)
+        .sink { [weak self] txt in
+          self?.translatedTextForMeToHear = txt
+        }
+        .store(in: &cancellables)
 
       (sttService as! AzureSpeechTranslationService).finalResult
-          .receive(on: RunLoop.main)
-          .sink { [weak self] txt in
-              guard let self else { return }
-              isProcessing = false
-              translatedTextForMeToHear = txt
-              sendTextToPeer(originalText: txt, isFinal: true)
-          }
-          .store(in: &cancellables)
+        .receive(on: RunLoop.main)
+        .sink { [weak self] txt in
+          guard let self else { return }
+          isProcessing = false
+          translatedTextForMeToHear = txt
+        }
+        .store(in: &cancellables)
+
+      (sttService as! AzureSpeechTranslationService).sourceFinalResult
+        .receive(on: RunLoop.main)
+        .sink { [weak self] txt in
+          guard let self else { return }
+          myTranscribedText = txt
+          sendTextToPeer(originalText: txt, isFinal: true)
+        }
+        .store(in: &cancellables)
 
 
 
     // ––––– TTS finished –––––
     ttsService.finishedSubject
       .receive(on: RunLoop.main)
-      .sink { [weak self] in self?.isProcessing = false }
+      .sink { [weak self] in
+        guard let self else { return }
+        isProcessing = false
+        if multipeerSession.connectionState == .connected {
+          if #available(iOS 18.4, *) { startListening() }
+        }
+      }
       .store(in: &cancellables)
       
   }
@@ -150,20 +176,20 @@ final class TranslationViewModel: ObservableObject {
     @available(iOS 18.4, *)
     func startListening() {
         liveTranslationTask?.cancel()
-            guard hasAllPermissions else {
-                myTranscribedText = "Missing permissions."
-                return
-            }
-            guard multipeerSession.connectionState == .connected else {
-                myTranscribedText = "Not connected."
-                return
-            }
-            guard !sttService.isListening else { return }
+        guard hasAllPermissions else {
+            myTranscribedText = "Missing permissions."
+            return
+        }
+        guard multipeerSession.connectionState == .connected else {
+            myTranscribedText = "Not connected."
+            return
+        }
+        guard !sttService.isListening else { return }
 
-            isProcessing = true
-            myTranscribedText = "Listening…"
-            peerSaidText = ""
-            translatedTextForMeToHear = ""
+        isProcessing = false
+        myTranscribedText = "Listening…"
+        peerSaidText = ""
+        translatedTextForMeToHear = ""
 
             // Actually start speech recognition
         (sttService as! AzureSpeechTranslationService)
@@ -226,8 +252,10 @@ final class TranslationViewModel: ObservableObject {
     peerSaidText = "Peer (\(m.sourceLanguageCode)): \(m.originalText)"
     translatedTextForMeToHear = m.isFinal ? "Translating…" : ""
     myTranscribedText = ""
-    isProcessing = m.isFinal
     guard m.isFinal else { return }
+
+    if #available(iOS 18.4, *) { stopListening() }
+    isProcessing = true
 
     Task {
       do {
@@ -239,6 +267,7 @@ final class TranslationViewModel: ObservableObject {
       } catch {
         translatedTextForMeToHear = "Local translation unavailable."
         isProcessing = false
+        if #available(iOS 18.4, *) { startListening() }
       }
     }
   }
