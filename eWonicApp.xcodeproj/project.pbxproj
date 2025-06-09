@@ -7,7 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0BB32B23300BC3F600DAD040 /* Pods_eWonicAppTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CA572151C49BB967A3C29A57 /* Pods_eWonicAppTests.framework */; };
 		1C46D6342DDB84010046F66D /* Translation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1C46D6332DDB84010046F66D /* Translation.framework */; };
+		B79182000153987D6AE984E3 /* Pods_eWonicApp.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 04384CD347FBBBAA7AF10C36 /* Pods_eWonicApp.framework */; };
+		DD8CEC14CCFD72E2708B7294 /* Pods_eWonicAppUITests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D8FF47B0D2D717EA9416BCC0 /* Pods_eWonicAppUITests.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -28,10 +31,19 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		04384CD347FBBBAA7AF10C36 /* Pods_eWonicApp.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_eWonicApp.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		1C46D5EC2DDA85400046F66D /* eWonicApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eWonicApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1C46D6022DDA85410046F66D /* eWonicAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eWonicAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1C46D60C2DDA85410046F66D /* eWonicAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eWonicAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1C46D6332DDB84010046F66D /* Translation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Translation.framework; path = System/Library/Frameworks/Translation.framework; sourceTree = SDKROOT; };
+		42F6672027AF3790E10B13BD /* Pods-eWonicApp.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-eWonicApp.release.xcconfig"; path = "Target Support Files/Pods-eWonicApp/Pods-eWonicApp.release.xcconfig"; sourceTree = "<group>"; };
+		601F316D57A325743FE9C3C0 /* Pods-eWonicAppUITests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-eWonicAppUITests.debug.xcconfig"; path = "Target Support Files/Pods-eWonicAppUITests/Pods-eWonicAppUITests.debug.xcconfig"; sourceTree = "<group>"; };
+		7AB43F22F141D7BD8266D5FB /* Pods-eWonicAppTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-eWonicAppTests.release.xcconfig"; path = "Target Support Files/Pods-eWonicAppTests/Pods-eWonicAppTests.release.xcconfig"; sourceTree = "<group>"; };
+		8E26AF1DA2953A6A60E20F9A /* Pods-eWonicApp.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-eWonicApp.debug.xcconfig"; path = "Target Support Files/Pods-eWonicApp/Pods-eWonicApp.debug.xcconfig"; sourceTree = "<group>"; };
+		BDA2495CF5A31A2DD9A71D67 /* Pods-eWonicAppUITests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-eWonicAppUITests.release.xcconfig"; path = "Target Support Files/Pods-eWonicAppUITests/Pods-eWonicAppUITests.release.xcconfig"; sourceTree = "<group>"; };
+		CA572151C49BB967A3C29A57 /* Pods_eWonicAppTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_eWonicAppTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		D8FF47B0D2D717EA9416BCC0 /* Pods_eWonicAppUITests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_eWonicAppUITests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		E3C68EBDE5AD82FCB4C2C8C8 /* Pods-eWonicAppTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-eWonicAppTests.debug.xcconfig"; path = "Target Support Files/Pods-eWonicAppTests/Pods-eWonicAppTests.debug.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -71,6 +83,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1C46D6342DDB84010046F66D /* Translation.framework in Frameworks */,
+				B79182000153987D6AE984E3 /* Pods_eWonicApp.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +91,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0BB32B23300BC3F600DAD040 /* Pods_eWonicAppTests.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -85,6 +99,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DD8CEC14CCFD72E2708B7294 /* Pods_eWonicAppUITests.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -99,6 +114,7 @@
 				1C46D60F2DDA85410046F66D /* eWonicAppUITests */,
 				1C46D6322DDB84000046F66D /* Frameworks */,
 				1C46D5ED2DDA85400046F66D /* Products */,
+				E7420F158BE40AC13A37B4F0 /* Pods */,
 			);
 			sourceTree = "<group>";
 		};
@@ -116,8 +132,24 @@
 			isa = PBXGroup;
 			children = (
 				1C46D6332DDB84010046F66D /* Translation.framework */,
+				04384CD347FBBBAA7AF10C36 /* Pods_eWonicApp.framework */,
+				CA572151C49BB967A3C29A57 /* Pods_eWonicAppTests.framework */,
+				D8FF47B0D2D717EA9416BCC0 /* Pods_eWonicAppUITests.framework */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		E7420F158BE40AC13A37B4F0 /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				8E26AF1DA2953A6A60E20F9A /* Pods-eWonicApp.debug.xcconfig */,
+				42F6672027AF3790E10B13BD /* Pods-eWonicApp.release.xcconfig */,
+				E3C68EBDE5AD82FCB4C2C8C8 /* Pods-eWonicAppTests.debug.xcconfig */,
+				7AB43F22F141D7BD8266D5FB /* Pods-eWonicAppTests.release.xcconfig */,
+				601F316D57A325743FE9C3C0 /* Pods-eWonicAppUITests.debug.xcconfig */,
+				BDA2495CF5A31A2DD9A71D67 /* Pods-eWonicAppUITests.release.xcconfig */,
+			);
+			path = Pods;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -127,9 +159,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1C46D6152DDA85410046F66D /* Build configuration list for PBXNativeTarget "eWonicApp" */;
 			buildPhases = (
+				FC0793CA7730D4FF6936A4CC /* [CP] Check Pods Manifest.lock */,
 				1C46D5E82DDA85400046F66D /* Sources */,
 				1C46D5E92DDA85400046F66D /* Frameworks */,
 				1C46D5EA2DDA85400046F66D /* Resources */,
+				9E71816FF202E8CB61649657 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -139,8 +173,6 @@
 				1C46D5EE2DDA85400046F66D /* eWonicApp */,
 			);
 			name = eWonicApp;
-			packageProductDependencies = (
-			);
 			productName = eWonicApp;
 			productReference = 1C46D5EC2DDA85400046F66D /* eWonicApp.app */;
 			productType = "com.apple.product-type.application";
@@ -149,6 +181,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1C46D61A2DDA85410046F66D /* Build configuration list for PBXNativeTarget "eWonicAppTests" */;
 			buildPhases = (
+				69E3A7ADDEA2C66B3A251230 /* [CP] Check Pods Manifest.lock */,
 				1C46D5FE2DDA85410046F66D /* Sources */,
 				1C46D5FF2DDA85410046F66D /* Frameworks */,
 				1C46D6002DDA85410046F66D /* Resources */,
@@ -162,8 +195,6 @@
 				1C46D6052DDA85410046F66D /* eWonicAppTests */,
 			);
 			name = eWonicAppTests;
-			packageProductDependencies = (
-			);
 			productName = eWonicAppTests;
 			productReference = 1C46D6022DDA85410046F66D /* eWonicAppTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -172,6 +203,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1C46D61D2DDA85410046F66D /* Build configuration list for PBXNativeTarget "eWonicAppUITests" */;
 			buildPhases = (
+				3DBBF668B15097E8CC9C6D50 /* [CP] Check Pods Manifest.lock */,
 				1C46D6082DDA85410046F66D /* Sources */,
 				1C46D6092DDA85410046F66D /* Frameworks */,
 				1C46D60A2DDA85410046F66D /* Resources */,
@@ -185,8 +217,6 @@
 				1C46D60F2DDA85410046F66D /* eWonicAppUITests */,
 			);
 			name = eWonicAppUITests;
-			packageProductDependencies = (
-			);
 			productName = eWonicAppUITests;
 			productReference = 1C46D60C2DDA85410046F66D /* eWonicAppUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -259,6 +289,96 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		3DBBF668B15097E8CC9C6D50 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-eWonicAppUITests-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+		69E3A7ADDEA2C66B3A251230 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-eWonicAppTests-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+		9E71816FF202E8CB61649657 /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-eWonicApp/Pods-eWonicApp-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			inputPaths = (
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-eWonicApp/Pods-eWonicApp-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-eWonicApp/Pods-eWonicApp-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		FC0793CA7730D4FF6936A4CC /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-eWonicApp-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		1C46D5E82DDA85400046F66D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -299,12 +419,14 @@
 /* Begin XCBuildConfiguration section */
 		1C46D6162DDA85410046F66D /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8E26AF1DA2953A6A60E20F9A /* Pods-eWonicApp.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7SGAMVTHDT;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eWonicApp/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
@@ -317,7 +439,7 @@
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -333,12 +455,14 @@
 		};
 		1C46D6172DDA85410046F66D /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 42F6672027AF3790E10B13BD /* Pods-eWonicApp.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7SGAMVTHDT;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eWonicApp/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
@@ -351,7 +475,7 @@
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -367,9 +491,13 @@
 		};
 		1C46D6182DDA85410046F66D /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = 1C46D5EE2DDA85400046F66D /* eWonicApp */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				AZ_REGION = "$(AZ_REGION)\n";
+				AZ_SUBSCRIPTION_KEY = "$(AZ_SUBSCRIPTION_KEY)\n";
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -431,9 +559,13 @@
 		};
 		1C46D6192DDA85410046F66D /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = 1C46D5EE2DDA85400046F66D /* eWonicApp */;
+			baseConfigurationReferenceRelativePath = Secrets.xcconfig;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				AZ_REGION = "$(AZ_REGION)\n";
+				AZ_SUBSCRIPTION_KEY = "$(AZ_SUBSCRIPTION_KEY)\n";
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -488,11 +620,13 @@
 		};
 		1C46D61B2DDA85410046F66D /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E3C68EBDE5AD82FCB4C2C8C8 /* Pods-eWonicAppTests.debug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RYRU58336F;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
 				MARKETING_VERSION = 1.0;
@@ -507,11 +641,13 @@
 		};
 		1C46D61C2DDA85410046F66D /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7AB43F22F141D7BD8266D5FB /* Pods-eWonicAppTests.release.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RYRU58336F;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
 				MARKETING_VERSION = 1.0;
@@ -526,10 +662,12 @@
 		};
 		1C46D61E2DDA85410046F66D /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 601F316D57A325743FE9C3C0 /* Pods-eWonicAppUITests.debug.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RYRU58336F;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = eWonic.eWonicAppUITests;
@@ -543,10 +681,12 @@
 		};
 		1C46D61F2DDA85410046F66D /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = BDA2495CF5A31A2DD9A71D67 /* Pods-eWonicAppUITests.release.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RYRU58336F;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = eWonic.eWonicAppUITests;

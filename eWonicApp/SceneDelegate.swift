@@ -19,7 +19,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             
             // Create the SwiftUI view that provides the window contents
             if #available(iOS 18.4, *) {
-                let contentView = ContentView()
+                let contentView = OnboardingView()
                 // Create the window and set the root view controller to the ContentView
                 let window = UIWindow(windowScene: windowScene)
                 window.rootViewController = UIHostingController(rootView: contentView)

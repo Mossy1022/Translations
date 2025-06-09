@@ -34,7 +34,7 @@ final class TranslationViewModel: ObservableObject {
 
   // Public services
   @Published var multipeerSession = MultipeerSession()
-  @Published var sttService       = NativeSTTService()
+  @Published var sttService       = AzureSpeechTranslationService()
   @Published var ttsService       = AppleTTSService()
 
   // UI-bound state
@@ -96,26 +96,24 @@ final class TranslationViewModel: ObservableObject {
       }
       .assign(to: &$connectionStatus)
 
-    // ––––– STT partials –––––
-      sttService.partialResultSubject
-        .receive(on: RunLoop.main)
-        .sink { [weak self] txt in
-          guard let self else { return }
-          myTranscribedText = "Listening: \(txt)…"
-          sendTextToPeer(originalText: txt, isFinal: false)
-        }
-        .store(in: &cancellables)
+      (sttService as! AzureSpeechTranslationService).partialResult
+          .receive(on: RunLoop.main)
+          .sink { [weak self] txt in
+              self?.translatedTextForMeToHear = txt
+              self?.sendTextToPeer(originalText: txt, isFinal: false)
+          }
+          .store(in: &cancellables)
 
-      // ─–––– STT finals –––––
-      sttService.finalResultSubject
-        .receive(on: RunLoop.main)
-        .sink { [weak self] txt in
-          guard let self else { return }
-          isProcessing = false
-          myTranscribedText = "You said: \(txt)"
-          sendTextToPeer(originalText: txt, isFinal: true)
-        }
-        .store(in: &cancellables)
+      (sttService as! AzureSpeechTranslationService).finalResult
+          .receive(on: RunLoop.main)
+          .sink { [weak self] txt in
+              guard let self else { return }
+              isProcessing = false
+              translatedTextForMeToHear = txt
+              sendTextToPeer(originalText: txt, isFinal: true)
+          }
+          .store(in: &cancellables)
+
 
 
     // ––––– TTS finished –––––
@@ -168,40 +166,39 @@ final class TranslationViewModel: ObservableObject {
             translatedTextForMeToHear = ""
 
             // Actually start speech recognition
-            sttService.startTranscribing(languageCode: myLanguage)
-
-            // ── ④ Immediately kick off streaming translation task
-            let tokenStream = sttService.partialTokensStream()
-            liveTranslationTask = Task {
-                do {
-                    // Consume the stream of partial‐speech tokens and forward to Apple’s translator:
-                    for try await translatedToken in try await Apple18StreamingTranslationService
-                            .shared
-                            .stream(tokenStream, from: myLanguage, to: peerLanguage) {
-                        // Each `translatedToken` is a piece of text as soon as it’s available.
-                        // Dispatch back to the main actor to update UI:
-                        await MainActor.run {
-                            // Append each new token so the UI shows gradual build‐up:
-                            if translatedTextForMeToHear.isEmpty {
-                                translatedTextForMeToHear = translatedToken
-                            } else {
-                                translatedTextForMeToHear += translatedToken
-                            }
-                        }
-                    }
-                } catch {
-                    // If streaming fails (e.g. iOS < 18.4 at runtime), fallback to single-shot:
-                    await MainActor.run {
-                        translatedTextForMeToHear = "Streaming Translation Unavailable"
-                        isProcessing = false
-                    }
-                }
-            }
+        (sttService as! AzureSpeechTranslationService)
+          .start(src: myLanguage, dst: peerLanguage)   // pass full “es-ES”            // ── ④ Immediately kick off streaming translation task
+//            let tokenStream = sttService.partialTokensStream()
+//            liveTranslationTask = Task {
+//                do {
+//                    // Consume the stream of partial‐speech tokens and forward to Apple’s translator:
+//                    for try await translatedToken in try await Apple18StreamingTranslationService
+//                            .shared
+//                            .stream(tokenStream, from: myLanguage, to: peerLanguage) {
+//                        // Each `translatedToken` is a piece of text as soon as it’s available.
+//                        // Dispatch back to the main actor to update UI:
+//                        await MainActor.run {
+//                            // Append each new token so the UI shows gradual build‐up:
+//                            if translatedTextForMeToHear.isEmpty {
+//                                translatedTextForMeToHear = translatedToken
+//                            } else {
+//                                translatedTextForMeToHear += translatedToken
+//                            }
+//                        }
+//                    }
+//                } catch {
+//                    // If streaming fails (e.g. iOS < 18.4 at runtime), fallback to single-shot:
+//                    await MainActor.run {
+//                        translatedTextForMeToHear = "Streaming Translation Unavailable"
+//                        isProcessing = false
+//                    }
+//                }
+//            }
         }
 
     func stopListening() {
             if sttService.isListening {
-                sttService.stopTranscribing()
+                (sttService as! AzureSpeechTranslationService).stop()
                 isProcessing = false
             }
         }

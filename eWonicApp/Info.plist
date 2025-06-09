@@ -6,8 +6,8 @@
 	<array>
 		<string>_ewonic-xlat._tcp</string>
 	</array>
-        <key>UIApplicationSceneManifest</key>
-        <dict>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 		<key>UISceneConfigurations</key>
@@ -23,13 +23,17 @@
 					<string>Main</string>
 				</dict>
 			</array>
-                </dict>
-        </dict>
-        <key>NSNearbyInteractionUsageDescription</key>
-        <string>Peer-to-peer translation uses nearby radios to exchange text.</string>
-        <key>NSPrivacyMicrophoneUsageDescription</key>
-        <string>Live speech must be captured for on-device translation.</string>
-        <key>com.apple.developer.audio-data</key>
-        <true/>
+		</dict>
+	</dict>
+	<key>NSNearbyInteractionUsageDescription</key>
+	<string>Peer-to-peer translation uses nearby radios to exchange text.</string>
+	<key>NSPrivacyMicrophoneUsageDescription</key>
+	<string>Live speech must be captured for on-device translation.</string>
+	<key>AZ_KEY</key>
+	<string>$(AZ_KEY)</string>
+	<key>AZ_REGION</key>
+	<string>$(AZ_REGION)</string>
+	<key>com.apple.developer.audio-data</key>
+	<true/>
 </dict>
 </plist>
