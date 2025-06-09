@@ -102,9 +102,9 @@ final class TranslationViewModel: ObservableObject {
         guard let self else { return }
         switch state {
         case .connected:
-          if #available(iOS 18.4, *) { startListening() }
+          startListening()
         default:
-          if #available(iOS 18.4, *) { stopListening() }
+          stopListening()
         }
       }
       .store(in: &cancellables)
@@ -143,7 +143,7 @@ final class TranslationViewModel: ObservableObject {
         guard let self else { return }
         isProcessing = false
         if multipeerSession.connectionState == .connected {
-          if #available(iOS 18.4, *) { startListening() }
+          startListening()
         }
       }
       .store(in: &cancellables)
@@ -173,7 +173,6 @@ final class TranslationViewModel: ObservableObject {
   // ────────────────────────────────
   // MARK: STT control
   // ────────────────────────────────
-    @available(iOS 18.4, *)
     func startListening() {
         liveTranslationTask?.cancel()
         guard hasAllPermissions else {
@@ -254,7 +253,7 @@ final class TranslationViewModel: ObservableObject {
     myTranscribedText = ""
     guard m.isFinal else { return }
 
-    if #available(iOS 18.4, *) { stopListening() }
+    stopListening()
     isProcessing = true
 
     Task {
@@ -267,7 +266,7 @@ final class TranslationViewModel: ObservableObject {
       } catch {
         translatedTextForMeToHear = "Local translation unavailable."
         isProcessing = false
-        if #available(iOS 18.4, *) { startListening() }
+        startListening()
       }
     }
   }
