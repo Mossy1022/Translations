@@ -35,8 +35,13 @@ final class AppleTTSService: NSObject, ObservableObject {
       AudioSessionManager.shared.begin()
 
       let utterance = AVSpeechUtterance(string: text)
-      utterance.voice = AVSpeechSynthesisVoice(language: languageCode) ?? AVSpeechSynthesisVoice(language: "en-US")
-      utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+      if let siriVoice = AVSpeechSynthesisVoice.speechVoices().first(where: { $0.name.contains("Siri") && $0.language == languageCode }) {
+        utterance.voice = siriVoice
+      } else {
+        utterance.voice = AVSpeechSynthesisVoice(language: languageCode) ?? AVSpeechSynthesisVoice(language: "en-US")
+      }
+      // Use a slightly slower rate for a more natural sound
+      utterance.rate = 0.5
 
       synthesizer.speak(utterance)
       isSpeaking = true
