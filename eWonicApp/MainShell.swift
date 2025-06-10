@@ -10,11 +10,6 @@ import SwiftUI
 @MainActor
 struct MainShell: View {
   var body: some View {
-    if #available(iOS 18.4, *) {
-      ContentView()
-    } else {
-      Text("iOS 18.4 or later required")
-        .padding()
-    }
+    ContentView()
   }
 }

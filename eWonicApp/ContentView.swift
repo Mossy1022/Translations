@@ -11,7 +11,6 @@
 
 import SwiftUI
 
-@available(iOS 18.4, *)
 struct ContentView: View {
   @StateObject private var view_model = TranslationViewModel()
 
@@ -300,8 +299,6 @@ private struct PeerDiscoveryView: View {
 
 struct ContentView_Previews: PreviewProvider {
   static var previews: some View {
-    if #available(iOS 18.4, *) {
-      ContentView().environment(\.colorScheme, .dark)
-    }
+    ContentView().environment(\.colorScheme, .dark)
   }
 }
