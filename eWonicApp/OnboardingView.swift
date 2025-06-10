@@ -7,8 +7,9 @@ import SwiftUI
 
 @MainActor
 struct OnboardingView: View {
-  @AppStorage("hasSeenOnboarding") private var done = false
-
+//  @AppStorage("hasSeenOnboarding") private var done = false
+    @State private var done = false
+    
     /// Returns the decorative image only if it actually exists
     private var wallpaper: some View {
       Group {

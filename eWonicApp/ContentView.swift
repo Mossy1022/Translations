@@ -228,10 +228,12 @@ private struct Record_button: View {
 
 private struct PeerDiscoveryView: View {
   @ObservedObject var session: MultipeerSession
+
   var body: some View {
     VStack(spacing: 18) {
       Text("Connect to a Peer")
         .font(.title2.weight(.semibold))
+
       HStack(spacing: 20) {
         Button {
           session.stopBrowsing()
@@ -260,11 +262,16 @@ private struct PeerDiscoveryView: View {
       if !session.discoveredPeers.isEmpty {
         Text("Found Peers:")
           .font(.headline)
+
+        // 🔑 Fix: hide UITableView background + clear each row
         List(session.discoveredPeers, id: \.self) { peer in
           Button(peer.displayName) { session.invitePeer(peer) }
+            .listRowBackground(Color.clear)        // row bg = transparent
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)          // table bg = transparent
         .frame(maxHeight: 220)
+
       } else if session.isBrowsing || session.isAdvertising {
         HStack {
           ProgressView()
@@ -287,6 +294,7 @@ private struct PeerDiscoveryView: View {
     .foregroundColor(.white)
   }
 }
+
 
 // ────────────────────────── PREVIEW ──────────────────────────
 
