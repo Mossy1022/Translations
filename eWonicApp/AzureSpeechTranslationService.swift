@@ -46,6 +46,8 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
     
     private var recognizer : SPXTranslationRecognizer?
     private var dstLang2   = "es"      // 2-letter, used by SDK
+    private var lastSrcLang = "en-US"   // remember for reconnect
+    private var lastDstLang = "es-ES"
     
     override init() {
         let (s,c)         = AsyncStream<String>.makeStream(bufferingPolicy:.bufferingNewest(64))
@@ -83,6 +85,9 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
             dstLang2 = String(dst.prefix(2).lowercased())
             cfg.addTargetLanguage(dstLang2)
             if let v = voice(for: dst) { cfg.speechSynthesisVoiceName = v }
+
+            lastSrcLang = src
+            lastDstLang = dst
             
             recognizer = try SPXTranslationRecognizer(
                 speechTranslationConfiguration: cfg,
@@ -128,8 +133,17 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
             audioChunk.send(data)
         }
         
-        recognizer!.addCanceledEventHandler { _, ev in
+        recognizer!.addCanceledEventHandler { [weak self] _, ev in
+            guard let self else { return }
+            let wasListening = self.isListening
+            self.recognizer = nil
+            self.isListening = false
             print("⚠️  Azure canceled (\(ev.errorCode.rawValue)) – \(ev.errorDetails)")
+            if wasListening {
+                DispatchQueue.main.async {
+                    self.start(src: self.lastSrcLang, dst: self.lastDstLang)
+                }
+            }
         }
     }
 
