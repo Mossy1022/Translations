@@ -35,12 +35,32 @@ final class AppleTTSService: NSObject, ObservableObject {
       AudioSessionManager.shared.begin()
 
       let utterance = AVSpeechUtterance(string: text)
-      utterance.voice = AVSpeechSynthesisVoice(language: languageCode) ?? AVSpeechSynthesisVoice(language: "en-US")
+      utterance.voice = bestVoice(for: languageCode)
       utterance.rate = AVSpeechUtteranceDefaultSpeechRate
 
       synthesizer.speak(utterance)
       isSpeaking = true
     }
+
+  /// Choose the highest quality voice for a given language, if available.
+  private func bestVoice(for languageCode: String) -> AVSpeechSynthesisVoice? {
+    // Search for a premium voice first when running on iOS 17 or later.
+    if #available(iOS 17.0, *) {
+      if let v = AVSpeechSynthesisVoice.speechVoices()
+                   .first(where: { $0.language == languageCode && $0.quality == .premium }) {
+        return v
+      }
+    }
+
+    // Fallback to any enhanced voice for this language.
+    if let v = AVSpeechSynthesisVoice.speechVoices()
+                 .first(where: { $0.language == languageCode && $0.quality == .enhanced }) {
+      return v
+    }
+
+    // Otherwise use the default voice.
+    return AVSpeechSynthesisVoice(language: languageCode)
+  }
 
   /// Stop any current speech immediately.
   func stop() {
