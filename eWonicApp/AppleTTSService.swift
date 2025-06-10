@@ -11,7 +11,10 @@ import Combine
 /// Thin wrapper around `AVSpeechSynthesizer`
 final class AppleTTSService: NSObject, ObservableObject {
   private let synthesizer = AVSpeechSynthesizer()
-
+    
+    /// (`0.0` … `1.0`).  0.55 ≈ normal;  0.70–0.80 feels “podcast-fast” but still intelligible.
+    @Published var speech_rate: Float = 0.55
+    
   @Published var isSpeaking = false
   let finishedSubject = PassthroughSubject<Void, Never>()
 
@@ -28,16 +31,22 @@ final class AppleTTSService: NSObject, ObservableObject {
       print("🗣 Speaking: '\(text)' in \(languageCode)")
       print("🔊 Voice available: \(String(describing: AVSpeechSynthesisVoice(language: languageCode)))")
 
-//      for voice in AVSpeechSynthesisVoice.speechVoices() {
-//        print("🔈 Available voice: \(voice.identifier), lang: \(voice.language), name: \(voice.name)")
-//      }
+      for voice in AVSpeechSynthesisVoice.speechVoices() {
+        print("🔈 Available voice: \(voice.identifier), lang: \(voice.language), name: \(voice.name)")
+      }
 
       AudioSessionManager.shared.begin()
 
       let utterance = AVSpeechUtterance(string: text)
       utterance.voice = bestVoice(for: languageCode)
-      utterance.rate = AVSpeechUtteranceDefaultSpeechRate
 
+        
+    // ⏩ faster delivery, zero padding
+    utterance.rate  = max(AVSpeechUtteranceMinimumSpeechRate,
+                          min(speech_rate, AVSpeechUtteranceMaximumSpeechRate))
+    utterance.preUtteranceDelay  = 0
+    utterance.postUtteranceDelay = 0
+        
       synthesizer.speak(utterance)
       isSpeaking = true
     }

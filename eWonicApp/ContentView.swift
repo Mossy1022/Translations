@@ -62,7 +62,7 @@ struct ContentView: View {
         .padding(.horizontal)
         .onDisappear {
           view_model.multipeerSession.disconnect()
-          view_model.sttService.stopTranscribing()
+          view_model.sttService.stop()
         }
       }
       .navigationBarHidden(true)

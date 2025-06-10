@@ -1,15 +1,21 @@
-import Foundation
+//
+//  UnifiedTranslateService.swift
+//  eWonicApp
+//
+//  Single source of truth for sentence-level translation.
+//  **Azure-only – no fallbacks.**
+//
 
-struct UnifiedTranslateService {
-  static func translate(_ text: String,
-                        from src: String,
-                        to   dst: String) async throws -> String {
-    if #available(iOS 18, *) {
-      return try await Apple18TranslationService.shared.translate(text,
-                                                                  from: src,
-                                                                  to:   dst)
-    }
-    throw NSError(domain: "Translate", code: -1,
-                  userInfo: [NSLocalizedDescriptionKey: "iOS 18 required"])
-  }
-}
+//import Foundation
+//
+//struct UnifiedTranslateService {
+//
+//  /// Translate *text* from **src** → **dst** via Azure Text Translator
+//  static func translate(_ text: String,
+//                        from src: String,
+//                        to   dst: String) async throws -> String {
+//    return try await AzureTextTranslator.translate(text,
+//                                                   from: src,
+//                                                   to:   dst)
+//  }
+//}

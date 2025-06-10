@@ -1,20 +1,22 @@
 import MultipeerConnectivity
 import Combine
 
-// Shared service identifier (10 chars, ASCII a–z0–9-)
+// 10-char ASCII (a–z 0–9 -)
 private let SERVICE_TYPE = "ewonic-xlat"
 
 final class MultipeerSession: NSObject, ObservableObject {
+
+  // ────────────────────────────── Public state
   static let peerLimit = 6
-  // MARK: – Public state
-  @Published private(set) var connectedPeers: [MCPeerID] = []
-  @Published private(set) var discoveredPeers: [MCPeerID] = []
-  @Published private(set) var connectionState: MCSessionState = .notConnected
+
+  @Published private(set) var connectedPeers:   [MCPeerID] = []
+  @Published private(set) var discoveredPeers:  [MCPeerID] = []
+  @Published private(set) var connectionState:  MCSessionState = .notConnected
   @Published private(set) var isAdvertising = false
   @Published private(set) var isBrowsing    = false
-  @Published var receivedMessage: MessageData?
+  @Published              var receivedMessage: MessageData?
 
-  // MARK: – MC plumbing
+  // ────────────────────────────── MC plumbing
   private let myPeerID = MCPeerID(displayName: UIDevice.current.name)
 
   private lazy var session: MCSession = {
@@ -31,20 +33,20 @@ final class MultipeerSession: NSObject, ObservableObject {
   private lazy var browser = MCNearbyServiceBrowser(
     peer: myPeerID, serviceType: SERVICE_TYPE)
 
-  // MARK: – Callback
+  // ────────────────────────────── Callback to VM
   var onMessageReceived: ((MessageData) -> Void)?
 
-  // MARK: – Init / Deinit
+  // ────────────────────────────── Life-cycle
   override init() {
     super.init()
     advertiser.delegate = self
     browser.delegate    = self
   }
-
   deinit { disconnect() }
 
-  // MARK: – Host / Join control
+  // ────────────────────────────── Host / Join
   func startHosting() {
+    stopBrowsing()
     guard !isAdvertising else { return }
     discoveredPeers.removeAll()
     advertiser.startAdvertisingPeer()
@@ -60,6 +62,7 @@ final class MultipeerSession: NSObject, ObservableObject {
   }
 
   func startBrowsing() {
+    stopHosting()
     guard !isBrowsing else { return }
     discoveredPeers.removeAll()
     browser.startBrowsingForPeers()
@@ -74,29 +77,30 @@ final class MultipeerSession: NSObject, ObservableObject {
     print("[Multipeer] Stopped browsing")
   }
 
-  // MARK: – Messaging
-  func invitePeer(_ peerID: MCPeerID) {
-    browser.invitePeer(peerID, to: session, withContext: nil, timeout: 30)
-  }
-
-  func send(message: MessageData) {
+  // ────────────────────────────── Messaging
+  /// Sends *message* to all connected peers.
+  /// - Non-final “live” updates use **unreliable** UDP to avoid back-pressure.
+  /// - Final chunks & control messages use **reliable** TCP.
+  func send(message: MessageData, reliable: Bool = true) {
     guard !session.connectedPeers.isEmpty else {
       print("⚠️ No connected peers – message not sent")
       return
     }
-
     guard let data = try? JSONEncoder().encode(message) else {
       print("❌ Failed to encode MessageData")
       return
     }
-
     do {
-      let compressed = try (data as NSData).compressed(using: .zlib) as Data
-      try session.send(compressed, toPeers: session.connectedPeers, with: .reliable)
-      print("📤 Sent \(compressed.count) bytes → \(session.connectedPeers.map { $0.displayName })")
+      let bin = try (data as NSData).compressed(using: .zlib) as Data
+     try session.send(bin, toPeers: session.connectedPeers, with: .reliable)
+      print("📤 Sent \(bin.count) bytes (\(reliable ? "R" : "U")) → \(session.connectedPeers.map { $0.displayName })")
     } catch {
       print("❌ session.send error: \(error.localizedDescription)")
     }
+  }
+
+  func invitePeer(_ id: MCPeerID) {
+    browser.invitePeer(id, to: session, withContext: nil, timeout: 30)
   }
 
   func disconnect() {
@@ -104,37 +108,43 @@ final class MultipeerSession: NSObject, ObservableObject {
     connectedPeers.removeAll()
     discoveredPeers.removeAll()
     connectionState = .notConnected
-    stopHosting()
-    stopBrowsing()
+    stopHosting(); stopBrowsing()
     print("[Multipeer] Disconnected")
   }
 }
 
-// MARK: – MCSessionDelegate
+// ────────────────────────────── MCSessionDelegate
 extension MultipeerSession: MCSessionDelegate {
-  func session(_ s: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
-    DispatchQueue.main.async {
-      self.connectionState = state
+
+  func session(_ s: MCSession, peer id: MCPeerID, didChange state: MCSessionState) {
+    DispatchQueue.main.async { [self] in
+      connectionState = state
       switch state {
       case .connected:
-        if !self.connectedPeers.contains(peerID) { self.connectedPeers.append(peerID) }
-        self.stopHosting(); self.stopBrowsing()
-        print("[Multipeer] \(peerID.displayName) CONNECTED")
+        if !connectedPeers.contains(id) { connectedPeers.append(id) }
+        stopHosting(); stopBrowsing()
+        print("[Multipeer] \(id.displayName) CONNECTED")
+
       case .connecting:
-        print("[Multipeer] \(peerID.displayName) CONNECTING…")
+        print("[Multipeer] \(id.displayName) CONNECTING…")
+
       case .notConnected:
-        self.connectedPeers.removeAll { $0 == peerID }
-        print("[Multipeer] \(peerID.displayName) DISCONNECTED")
+        connectedPeers.removeAll { $0 == id }
+        print("[Multipeer] \(id.displayName) DISCONNECTED")
+
+        /// 🔄  Auto-recover: resume browsing so user can tap “Join” again quickly.
+        if !isBrowsing && connectedPeers.isEmpty { startBrowsing() }
+
       @unknown default: break
       }
     }
   }
 
-  func session(_ s: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
-    print("📨 Received \(data.count) bytes from \(peerID.displayName)")
+  func session(_ s: MCSession, didReceive data: Data, fromPeer id: MCPeerID) {
+    print("📨 Received \(data.count) bytes from \(id.displayName)")
     guard
-      let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data,
-      let msg = try? JSONDecoder().decode(MessageData.self, from: decompressed)
+      let raw   = try? (data as NSData).decompressed(using: .zlib) as Data,
+      let msg   = try? JSONDecoder().decode(MessageData.self, from: raw)
     else {
       print("❌ Could not decode MessageData")
       return
@@ -145,40 +155,37 @@ extension MultipeerSession: MCSessionDelegate {
     }
   }
 
-  // Unused stubs
+  // unused
   func session(_:MCSession, didReceive _:InputStream, withName _:String, fromPeer _:MCPeerID) {}
   func session(_:MCSession, didStartReceivingResourceWithName _:String, fromPeer _:MCPeerID, with _:Progress) {}
   func session(_:MCSession, didFinishReceivingResourceWithName _:String, fromPeer _:MCPeerID, at _:URL?, withError _:Error?) {}
 }
 
-// MARK: – Advertiser / Browser
+// ────────────────────────────── Advertiser / Browser
 extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
   func advertiser(_:MCNearbyServiceAdvertiser,
-                  didReceiveInvitationFromPeer peerID: MCPeerID,
+                  didReceiveInvitationFromPeer id: MCPeerID,
                   withContext _:Data?,
                   invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-    let accept = self.connectedPeers.count < MultipeerSession.peerLimit
-    invitationHandler(accept, accept ? self.session : nil)
+    let accept = connectedPeers.count < MultipeerSession.peerLimit
+    invitationHandler(accept, accept ? session : nil)
   }
-
   func advertiser(_:MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
     print("Advertiser error: \(error.localizedDescription)")
   }
 }
 
 extension MultipeerSession: MCNearbyServiceBrowserDelegate {
-  func browser(_:MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo _: [String:String]?) {
+  func browser(_:MCNearbyServiceBrowser, foundPeer id: MCPeerID, withDiscoveryInfo _: [String:String]?) {
     DispatchQueue.main.async {
-      if !self.discoveredPeers.contains(peerID) { self.discoveredPeers.append(peerID) }
-      print("🟢 Found peer \(peerID.displayName)")
+      if !self.discoveredPeers.contains(id) { self.discoveredPeers.append(id) }
+      print("🟢 Found peer \(id.displayName)")
     }
   }
-
-  func browser(_:MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
-    DispatchQueue.main.async { self.discoveredPeers.removeAll { $0 == peerID } }
-    print("🔴 Lost peer \(peerID.displayName)")
+  func browser(_:MCNearbyServiceBrowser, lostPeer id: MCPeerID) {
+    DispatchQueue.main.async { self.discoveredPeers.removeAll { $0 == id } }
+    print("🔴 Lost peer \(id.displayName)")
   }
-
   func browser(_:MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
     print("Browser error: \(error.localizedDescription)")
   }

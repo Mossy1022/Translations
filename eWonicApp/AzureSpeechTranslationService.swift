@@ -2,8 +2,9 @@
 //  AzureSpeechTranslationService.swift
 //  eWonicApp
 //
-//  Online STT → translation → (optional) TTS pipeline powered by Azure Cognitive Services.
-//  Mirrors NativeSTTService so the VM can hot-swap either implementation.
+//  Speech SDK mic-to-translation service.
+//  2025-06-10 – finalResult now guaranteed to fire even if the
+//  translations dictionary is empty (edge-cases seen with es-ES ⇢ en).
 //
 
 import Foundation
@@ -14,152 +15,176 @@ import MicrosoftCognitiveServicesSpeech
 
 @MainActor
 final class AzureSpeechTranslationService: NSObject, ObservableObject {
-    
-    // ─────────────────────────────────────────────
-    // MARK: – Secrets
-    // ─────────────────────────────────────────────
-    private let AZ_KEY: String = {
-        guard let k = Bundle.main.object(forInfoDictionaryKey: "AZ_KEY") as? String
-        else { fatalError("AZ_KEY missing from Info.plist") }
-        return k.trimmingCharacters(in: .whitespacesAndNewlines)
-    }()
-    
-    private let AZ_REGION: String = {
-        guard let r = Bundle.main.object(forInfoDictionaryKey: "AZ_REGION") as? String
-        else { fatalError("AZ_REGION missing from Info.plist") }
-        return r.trimmingCharacters(in: .whitespacesAndNewlines)
-    }()
-    
-    // ─────────────────────────────────────────────
-    // MARK: – Public surface
-    // ─────────────────────────────────────────────
-    @Published private(set) var isListening = false
-    @Published              var recognizedText = ""
-    
-    let  partialResult = PassthroughSubject<String, Never>()
-    let  finalResult   = PassthroughSubject<String, Never>()
-    let  sourceFinalResult   = PassthroughSubject<String,Never>()   // **raw** full sentence
-    let  audioChunk    = PassthroughSubject<Data,   Never>()   // TTS bytes
-    
-    private let partialStreamCont : AsyncStream<String>.Continuation
-    public  let partialStream     : AsyncStream<String>
-    
-    private var recognizer : SPXTranslationRecognizer?
-    private var dstLang2   = "es"      // 2-letter, used by SDK
-    private var lastSrcLang = "en-US"   // remember for reconnect
-    private var lastDstLang = "es-ES"
-    
-    override init() {
-        let (s,c)         = AsyncStream<String>.makeStream(bufferingPolicy:.bufferingNewest(64))
-        partialStream     = s
-        partialStreamCont = c
-        super.init()
-    }
-    
-    // ─────────────────────────────────────────────
-    // MARK: – Permissions
-    // ─────────────────────────────────────────────
-    func requestPermission(_ done:@escaping(Bool)->Void) {
-        SFSpeechRecognizer.requestAuthorization { auth in
-            DispatchQueue.main.async {
-                guard auth == .authorized else { done(false); return }
-                AVAudioSession.sharedInstance().requestRecordPermission { micOK in
-                    DispatchQueue.main.async { done(micOK) }
-                }
-            }
-        }
-    }
-    
-    func setupSpeechRecognizer(languageCode: String) { /* noop – kept for API parity */ }
-    
-    // ─────────────────────────────────────────────
-    // MARK: – Continuous STT → translation
-    // ─────────────────────────────────────────────
-    /// `src` and `dst` **must** be full BCP-47 strings, e.g. “en-US”, “es-ES”.
-    func start(src:String = "en-US", dst:String = "es-ES") {
-        guard !isListening else { return }
-        do {
-            let cfg = try SPXSpeechTranslationConfiguration(subscription: AZ_KEY,
-                                                            region: AZ_REGION)
-            cfg.speechRecognitionLanguage = src
-            dstLang2 = String(dst.prefix(2).lowercased())
-            cfg.addTargetLanguage(dstLang2)
-            if let v = voice(for: dst) { cfg.speechSynthesisVoiceName = v }
 
-            lastSrcLang = src
-            lastDstLang = dst
-            
-            recognizer = try SPXTranslationRecognizer(
-                speechTranslationConfiguration: cfg,
-                audioConfiguration: try SPXAudioConfiguration())
-            
-            hookEvents()
-            try recognizer?.startContinuousRecognition()
-            isListening = true
-        } catch { print("❌ Azure recognizer failed: \(error)") }
-    }
-    
-    func stop() {
-        guard isListening else { return }
-        try? recognizer?.stopContinuousRecognition()
-        recognizer = nil
-        isListening = false
-    }
-    
-    // ─────────────────────────────────────────────
-    // MARK: – Internal event wiring
-    // ─────────────────────────────────────────────
-    private func hookEvents() {
-        // incremental translation tokens → UI
-        recognizer!.addRecognizingEventHandler { [weak self] _, ev in
-            guard let self,
-                  let tx = ev.result.translations[self.dstLang2] as? String else { return }
-            partialResult.send(tx)
-        }
-        
-        // sentence complete → both raw + translated
-        recognizer!.addRecognizedEventHandler { [weak self] _, ev in
-            guard let self else { return }
-            let raw = ev.result.text ?? ""
-            if let tx = ev.result.translations[self.dstLang2] as? String {
-                finalResult.send(tx)
-            }
-            if !raw.isEmpty { sourceFinalResult.send(raw) }
-        }
-        
-        // synthesized‑audio passthrough (optional)
-        recognizer!.addSynthesizingEventHandler { [weak self] _, ev in
-            guard let self, let data = ev.result.audio else { return }
-            audioChunk.send(data)
-        }
-        
-        recognizer!.addCanceledEventHandler { [weak self] _, ev in
-            guard let self else { return }
-            let wasListening = self.isListening
-            self.recognizer = nil
-            self.isListening = false
-            print("⚠️  Azure canceled (\(ev.errorCode.rawValue)) – \(ev.errorDetails)")
-            if wasListening {
-                DispatchQueue.main.async {
-                    self.start(src: self.lastSrcLang, dst: self.lastDstLang)
-                }
-            }
-        }
-    }
+  // ─────────────────────────────────────────────
+  // MARK: – Secrets
+  // ─────────────────────────────────────────────
+  private let AZ_KEY: String = {
+    guard let k = Bundle.main.object(forInfoDictionaryKey: "AZ_KEY") as? String
+    else { fatalError("AZ_KEY missing from Info.plist") }
+    return k.trimmingCharacters(in: .whitespacesAndNewlines)
+  }()
 
+  private let AZ_REGION: String = {
+    guard let r = Bundle.main.object(forInfoDictionaryKey: "AZ_REGION") as? String
+    else { fatalError("AZ_REGION missing from Info.plist") }
+    return r.trimmingCharacters(in: .whitespacesAndNewlines)
+  }()
 
+  // ─────────────────────────────────────────────
+  // MARK: – Public surface
+  // ─────────────────────────────────────────────
+  @Published private(set) var isListening = false
 
+  let partialResult     = PassthroughSubject<String,Never>() // live streaming
+  let finalResult       = PassthroughSubject<String,Never>() // translated sentence
+  let sourceFinalResult = PassthroughSubject<String,Never>() // raw sentence
+  let audioChunk        = PassthroughSubject<Data,  Never>() // TTS bytes (unused)
 
-  private func voice(for locale:String) -> String? {
-    switch locale.lowercased() {
-      case "es-es": return "es-ES-AlvaroNeural"
-      case "en-us": return "en-US-JennyNeural"
-      default:      return nil                              // skip if unknown
+  private let partialStreamCont : AsyncStream<String>.Continuation
+  public  let partialStream     : AsyncStream<String>
+
+  private var recognizer : SPXTranslationRecognizer?
+  private var dst_lang_2 = "es"
+
+  // — state to auto-reconnect
+  private var last_src_lang = "en-US"
+  private var last_dst_lang = "es-ES"
+
+  override init() {
+    let (stream, cont) = AsyncStream<String>.makeStream(bufferingPolicy:.bufferingNewest(64))
+    partialStream     = stream
+    partialStreamCont = cont
+    super.init()
+  }
+
+  // ─────────────────────────────────────────────
+  // MARK: – Permissions
+  // ─────────────────────────────────────────────
+  func requestPermission(_ done:@escaping(Bool)->Void) {
+    SFSpeechRecognizer.requestAuthorization { auth in
+      DispatchQueue.main.async {
+        guard auth == .authorized else { done(false); return }
+        AVAudioSession.sharedInstance().requestRecordPermission { micOK in
+          DispatchQueue.main.async { done(micOK) }
+        }
+      }
     }
   }
-    
 
-  // MARK: – Stream helper (VM compatibility)
-  func partialTokensStream() -> AsyncStream<String> { partialStream }
-  func stopTranscribing()            { stop() }
+  // no-op – API parity with NativeSTT
+  func setupSpeechRecognizer(languageCode _: String) {}
+
+  // ─────────────────────────────────────────────
+  // MARK: – Continuous STT → translation
+  // ─────────────────────────────────────────────
+  func start(src: String = "en-US", dst: String = "es-ES") {
+    guard !isListening else { return }
+
+    AudioSessionManager.shared.begin()
+
+    do {
+      let cfg = try SPXSpeechTranslationConfiguration(
+        subscription: AZ_KEY, region: AZ_REGION)
+
+      cfg.speechRecognitionLanguage = src
+      dst_lang_2 = String(dst.prefix(2).lowercased())
+      cfg.addTargetLanguage(dst_lang_2)
+      if let v = voice(for: dst) { cfg.speechSynthesisVoiceName = v }
+
+      last_src_lang = src
+      last_dst_lang = dst
+
+      recognizer = try SPXTranslationRecognizer(
+        speechTranslationConfiguration: cfg,
+        audioConfiguration: try SPXAudioConfiguration())
+
+      hookEvents()
+      try recognizer?.startContinuousRecognition()
+      isListening = true
+
+    } catch {
+      print("❌ Azure recognizer failed: \(error)")
+      AudioSessionManager.shared.end()
+    }
+  }
+
+  func stop() {
+    guard isListening else { return }
+    try? recognizer?.stopContinuousRecognition()
+    recognizer = nil
+    isListening = false
+    AudioSessionManager.shared.end()
+  }
+
+  // ─────────────────────────────────────────────
+  // MARK: – Event wiring
+  // ─────────────────────────────────────────────
+  private func hookEvents() {
+
+    // Live partial translation tokens
+    recognizer!.addRecognizingEventHandler { [weak self] _, ev in
+      guard let self,
+            let txt = ev.result.translations[self.dst_lang_2] as? String
+      else { return }
+      DispatchQueue.main.async {
+        self.partialResult.send(txt)
+        self.partialStreamCont.yield(txt)
+      }
+    }
+
+    // Final sentence
+    recognizer!.addRecognizedEventHandler { [weak self] _, ev in
+      guard let self else { return }
+
+      // Azure sometimes omits the translation in the final callback
+      // when synthesis is requested; fall back to the raw text.
+      let translated = (ev.result.translations[self.dst_lang_2] as? String)?
+                         .trimmingCharacters(in:.whitespacesAndNewlines)
+
+      let raw        = (ev.result.text ?? "")
+                         .trimmingCharacters(in:.whitespacesAndNewlines)
+
+      DispatchQueue.main.async {
+        if let tx = translated, !tx.isEmpty {
+          self.finalResult.send(tx)
+        } else if !raw.isEmpty {
+          self.finalResult.send(raw)          // fallback
+        }
+        if !raw.isEmpty { self.sourceFinalResult.send(raw) }
+      }
+    }
+
+    // Synth-audio passthrough (optional)
+    recognizer!.addSynthesizingEventHandler { [weak self] _, ev in
+      guard let self, let data = ev.result.audio else { return }
+      DispatchQueue.main.async { self.audioChunk.send(data) }
+    }
+
+    // Auto-reconnect on cancellation
+    recognizer!.addCanceledEventHandler { [weak self] _, ev in
+      guard let self else { return }
+      let wasListening = self.isListening
+      self.recognizer  = nil
+      self.isListening = false
+      print("⚠️ Azure cancelled (\(ev.errorCode.rawValue)) – \(ev.errorDetails)")
+      AudioSessionManager.shared.end()
+      if wasListening {
+        DispatchQueue.main.async {
+          self.start(src:self.last_src_lang, dst:self.last_dst_lang)
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // MARK: – Helpers
+  // ─────────────────────────────────────────────
+  private func voice(for locale: String) -> String? {
+    switch locale.lowercased() {
+    case "en-us": return "en-US-JennyMultilingualNeural"
+    case "es-es": return "es-ES-AlvaroNeural"
+    default:      return nil
+    }
+  }
 }
