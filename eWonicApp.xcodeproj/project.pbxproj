@@ -429,10 +429,12 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eWonicApp/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_CFBundleDisplayName = eWonic;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app uses Bluetooth to discover and connect with nearby peers.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app needs access to the local network to find and connect with nearby devices.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "his app needs access to your microphone to record audio for translation.";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Peer-to-peer translation uses nearby radios to exchange text.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "This app needs to recgonize speech to work";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
@@ -444,8 +446,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = eWonic.eWonicApp;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = eWonic.eWonicAppFinal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -465,10 +467,12 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eWonicApp/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_CFBundleDisplayName = eWonic;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app uses Bluetooth to discover and connect with nearby peers.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app needs access to the local network to find and connect with nearby devices.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "his app needs access to your microphone to record audio for translation.";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "Peer-to-peer translation uses nearby radios to exchange text.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "This app needs to recgonize speech to work";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
@@ -480,8 +484,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = eWonic.eWonicApp;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = eWonic.eWonicAppFinal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;

@@ -2,10 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>AZ_KEY</key>
+	<string>$(AZ_KEY)</string>
+	<key>AZ_REGION</key>
+	<string>$(AZ_REGION)</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ewonic-xlat._tcp</string>
 	</array>
+	<key>NSPrivacyMicrophoneUsageDescription</key>
+	<string>Live speech must be captured for on-device translation.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -25,14 +31,6 @@
 			</array>
 		</dict>
 	</dict>
-	<key>NSNearbyInteractionUsageDescription</key>
-	<string>Peer-to-peer translation uses nearby radios to exchange text.</string>
-	<key>NSPrivacyMicrophoneUsageDescription</key>
-	<string>Live speech must be captured for on-device translation.</string>
-	<key>AZ_KEY</key>
-	<string>$(AZ_KEY)</string>
-	<key>AZ_REGION</key>
-	<string>$(AZ_REGION)</string>
 	<key>com.apple.developer.audio-data</key>
 	<true/>
 </dict>
