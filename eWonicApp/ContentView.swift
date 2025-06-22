@@ -3,10 +3,7 @@
 //  eWonicApp
 //
 //  Polished UI shell for the real-time translation demo.
-//  All original wiring preserved – only visual style updated.
-//
-//  Created by Evan Moscoso on 5/18/25.
-//  Refined 6/09/25.
+//  Voice picker added 2025-06-10.
 //
 
 import SwiftUI
@@ -17,7 +14,6 @@ struct ContentView: View {
   var body: some View {
     NavigationView {
       ZStack {
-        // Gradient backdrop
         EwonicTheme.bgGradient.ignoresSafeArea()
 
         VStack(spacing: 20) {
@@ -26,7 +22,6 @@ struct ContentView: View {
           Connection_pill(status: view_model.connectionStatus,
                           peer_count: view_model.multipeerSession.connectedPeers.count)
 
-          // Permissions gate
           if !view_model.hasAllPermissions {
             Permission_card(msg: view_model.permissionStatusMessage) {
               view_model.checkAllPermissions()
@@ -38,6 +33,9 @@ struct ContentView: View {
                          peer_lang: $view_model.peerLanguage,
                          list:      view_model.availableLanguages,
                          disabled:  view_model.isProcessing || view_model.sttService.isListening)
+
+              Voice_bar(voice_for_lang: $view_model.voice_for_lang,
+                        voices:        view_model.availableVoices)
 
             Conversation_scroll(my_text:  view_model.myTranscribedText,
                                 peer_text: view_model.peerSaidText,
@@ -161,6 +159,62 @@ private struct Lang_menu: View {
   private func short(_ c: String) -> String { c.split(separator: "-").first?.uppercased() ?? c }
 }
 
+// ────────────────────────── Voice picker  ──────────────────────────
+private struct Voice_bar: View {
+  @Binding var voice_for_lang: [String:String]
+  let voices: [TranslationViewModel.Voice]
+
+  var body: some View {
+    Menu {
+      ForEach(grouped(), id:\.key) { lang, list in
+        Section(header: Text(lang).font(.footnote)) {
+          ForEach(list) { v in
+            let picked = voice_for_lang[lang] == v.identifier
+            Button(role: .none) {
+              voice_for_lang[lang] = v.identifier
+              voice_for_lang = voice_for_lang            // force Combine publish
+            } label: {
+              if picked {
+                Label(v.name, systemImage: "checkmark")
+                  .font(.body.weight(.semibold))
+              } else {
+                Text(v.name)
+                  .font(.body)
+              }
+            }
+          }
+        }
+      }
+
+      if !voice_for_lang.isEmpty {
+        Divider()
+        Button("System defaults") {
+          voice_for_lang.removeAll()
+          voice_for_lang = [:]
+        }
+      }
+    } label: {
+      HStack(spacing:4){
+        Image(systemName:"speaker.wave.2.fill")
+        Text("Voices").fontWeight(.semibold)
+        Image(systemName:"chevron.down")
+      }
+      .padding(.horizontal,10).padding(.vertical,6)
+      .background(Color.white.opacity(0.12),
+                  in: RoundedRectangle(cornerRadius:8))
+    }
+    .foregroundColor(.white)
+  }
+
+  private func grouped()
+    -> [(key:String, value:[TranslationViewModel.Voice])] {
+      Dictionary(grouping: voices, by: { $0.language })
+        .sorted { $0.key < $1.key }
+  }
+}
+
+// ────────────────────────── Conversation  ──────────────────────────
+
 private struct Conversation_scroll: View {
   let my_text: String
   let peer_text: String
@@ -222,6 +276,10 @@ private struct Record_button: View {
     .disabled(is_processing && !is_listening)
   }
 }
+
+// ────────────────────────── PEER DISCOVERY (unchanged) ──────────────────────────
+// … (rest of PeerDiscoveryView stays exactly the same) …
+
 
 // ────────────────────────── PEER DISCOVERY ──────────────────────────
 

@@ -3,8 +3,7 @@
 //  eWonicApp
 //
 //  Speech SDK mic-to-translation service.
-//  2025-06-10 – finalResult now guaranteed to fire even if the
-//  translations dictionary is empty (edge-cases seen with es-ES ⇢ en).
+//  2025-06-11 – **Audio synthesis removed**
 //
 
 import Foundation
@@ -39,7 +38,7 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
   let partialResult     = PassthroughSubject<String,Never>() // live streaming
   let finalResult       = PassthroughSubject<String,Never>() // translated sentence
   let sourceFinalResult = PassthroughSubject<String,Never>() // raw sentence
-  let audioChunk        = PassthroughSubject<Data,  Never>() // TTS bytes (unused)
+  let audioChunk        = PassthroughSubject<Data,  Never>() // (unused)
 
   private let partialStreamCont : AsyncStream<String>.Continuation
   public  let partialStream     : AsyncStream<String>
@@ -52,7 +51,8 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
   private var last_dst_lang = "es-ES"
 
   override init() {
-    let (stream, cont) = AsyncStream<String>.makeStream(bufferingPolicy:.bufferingNewest(64))
+    let (stream, cont) = AsyncStream<String>.makeStream(
+                           bufferingPolicy:.bufferingNewest(64))
     partialStream     = stream
     partialStreamCont = cont
     super.init()
@@ -90,7 +90,10 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
       cfg.speechRecognitionLanguage = src
       dst_lang_2 = String(dst.prefix(2).lowercased())
       cfg.addTargetLanguage(dst_lang_2)
-      if let v = voice(for: dst) { cfg.speechSynthesisVoiceName = v }
+
+      // ✂️  REMOVE built-in Azure TTS.
+      // We will speak locally with AppleTTSService instead so that
+      // per-language voice selections apply on device.
 
       last_src_lang = src
       last_dst_lang = dst
@@ -137,13 +140,11 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
     recognizer!.addRecognizedEventHandler { [weak self] _, ev in
       guard let self else { return }
 
-      // Azure sometimes omits the translation in the final callback
-      // when synthesis is requested; fall back to the raw text.
       let translated = (ev.result.translations[self.dst_lang_2] as? String)?
                          .trimmingCharacters(in:.whitespacesAndNewlines)
 
-      let raw        = (ev.result.text ?? "")
-                         .trimmingCharacters(in:.whitespacesAndNewlines)
+      let raw = (ev.result.text ?? "")
+                  .trimmingCharacters(in:.whitespacesAndNewlines)
 
       DispatchQueue.main.async {
         if let tx = translated, !tx.isEmpty {
@@ -155,7 +156,7 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
       }
     }
 
-    // Synth-audio passthrough (optional)
+    // Synth-audio passthrough now redundant (kept for future use)
     recognizer!.addSynthesizingEventHandler { [weak self] _, ev in
       guard let self, let data = ev.result.audio else { return }
       DispatchQueue.main.async { self.audioChunk.send(data) }
@@ -174,17 +175,6 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
           self.start(src:self.last_src_lang, dst:self.last_dst_lang)
         }
       }
-    }
-  }
-
-  // ─────────────────────────────────────────────
-  // MARK: – Helpers
-  // ─────────────────────────────────────────────
-  private func voice(for locale: String) -> String? {
-    switch locale.lowercased() {
-    case "en-us": return "en-US-JennyMultilingualNeural"
-    case "es-es": return "es-ES-AlvaroNeural"
-    default:      return nil
     }
   }
 }
