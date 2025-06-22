@@ -2,20 +2,22 @@
 //  TranslationViewModel.swift
 //  eWonicApp
 //
-//  2025-06-11 – speaks **only** incoming translations
+//  v2 – 2025‑06‑22
+//  • All Azure code removed
+//  • Live pipeline: NativeSTTService → Apple26StreamingTranslationService
 //
 
 import Foundation
 import Combine
-import Speech
 import AVFoundation
 
+@available(iOS 26.0, *)
 @MainActor
 final class TranslationViewModel: ObservableObject {
 
   // ─────────────────────────────── Services
   @Published var multipeerSession = MultipeerSession()
-  @Published var sttService       = AzureSpeechTranslationService()
+  @Published var sttService       = NativeSTTService()
   @Published var ttsService       = AppleTTSService()
 
   // ─────────────────────────────── UI state
@@ -50,18 +52,17 @@ final class TranslationViewModel: ObservableObject {
   // ─────────────────────────────── Voices
   struct Voice: Identifiable, Hashable {
     let id         = UUID()
-    let language:  String      // full BCP-47
+    let language:  String
     let name:      String
     let identifier:String
   }
 
   @Published var availableVoices: [Voice] = []
-
-  /// languageCode → chosen voice identifier
-  @Published var voice_for_lang: [String:String] = [:]
+  @Published var voice_for_lang:  [String:String] = [:]
 
   // ─────────────────────────────── Internals
   private var cancellables            = Set<AnyCancellable>()
+  private var live_translation_task:  Task<Void,Never>?
   private var lastReceivedTimestamp   : TimeInterval = 0
   private var wasListeningPrePlayback = false
 
@@ -70,7 +71,6 @@ final class TranslationViewModel: ObservableObject {
     checkAllPermissions()
     refreshVoices()
     wireConnectionBadge()
-    wirePipelines()
     wireMicPauseDuringPlayback()
     multipeerSession.onMessageReceived = { [weak self] m in
       self?.handleReceivedMessage(m)
@@ -81,7 +81,7 @@ final class TranslationViewModel: ObservableObject {
   func checkAllPermissions() {
     sttService.requestPermission { [weak self] ok in
       guard let self else { return }
-      hasAllPermissions       = ok
+      hasAllPermissions = ok
       permissionStatusMessage = ok ? "Permissions granted."
                                    : "Speech & Microphone permission denied."
       if ok { sttService.setupSpeechRecognizer(languageCode: myLanguage) }
@@ -90,54 +90,136 @@ final class TranslationViewModel: ObservableObject {
 
   // ─────────────────────────────── Mic control
   func startListening() {
-    guard hasAllPermissions else { myTranscribedText = "Missing permissions."; return }
-    guard multipeerSession.connectionState == .connected else { myTranscribedText = "Not connected."; return }
+    guard hasAllPermissions else {
+      myTranscribedText = "Missing permissions."
+      return
+    }
+    guard multipeerSession.connectionState == .connected else {
+      myTranscribedText = "Not connected."
+      return
+    }
     guard !sttService.isListening else { return }
 
+    // Reset UI
     isProcessing              = true
     myTranscribedText         = "Listening…"
     peerSaidText              = ""
     translatedTextForMeToHear = ""
 
-    (sttService as! AzureSpeechTranslationService)
-      .start(src: myLanguage, dst: peerLanguage)
+    // (1) Start STT
+    sttService.startTranscribing(languageCode: myLanguage)
+
+    // (2) Launch live translator pipeline
+    live_translation_task?.cancel()
+    live_translation_task = Task { [weak self] in
+      await self?.run_live_translation()
+    }
   }
 
   func stopListening() {
-    (sttService as! AzureSpeechTranslationService).stop()
+    sttService.stopTranscribing()
+    live_translation_task?.cancel()
+    live_translation_task = nil
     isProcessing = false
   }
 
-  // ─────────────────────────────── Combine pipelines
-  private func wirePipelines() {
+  // MARK: – Live streaming pipeline
+  private func run_live_translation() async {
+    guard let stream = try? await Apple26StreamingTranslationService.shared
+      .stream(sttService.partialTokensStream(),
+              from: myLanguage,
+              to:   peerLanguage)
+    else {
+      await MainActor.run { self.isProcessing = false }
+      return
+    }
 
-    // Live partials (UI only)
-    (sttService as! AzureSpeechTranslationService)
-      .partialResult
-      .receive(on: RunLoop.main)
-      .removeDuplicates()
-      .throttle(for: .milliseconds(600), scheduler: RunLoop.main, latest: true)
-      .assign(to: &$translatedTextForMeToHear)
-
-    // FINAL translation – send to peer (NO local TTS)
-    (sttService as! AzureSpeechTranslationService)
-      .finalResult
-      .receive(on: RunLoop.main)
-      .sink { [weak self] tx in
-        guard let self else { return }
-        isProcessing              = false
-        translatedTextForMeToHear = tx
-        sendTextToPeer(tx)
+    do {
+      for try await token in stream {
+        await MainActor.run {
+          self.translatedTextForMeToHear = token
+        }
       }
-      .store(in:&cancellables)
-
-    // Raw sentence I spoke → UI
-    (sttService as! AzureSpeechTranslationService)
-      .sourceFinalResult
-      .receive(on: RunLoop.main)
-      .assign(to: &$myTranscribedText)
+    } catch {
+      await MainActor.run {
+        self.translatedTextForMeToHear = "⚠️ Translation error"
+        self.isProcessing = false
+      }
+    }
   }
 
+  // ─────────────────────────────── Final sentence hook
+  /// Called by STT when a sentence is finished.
+  private var final_sub: AnyCancellable?
+  private func attach_final_sentence_handler() {
+    final_sub?.cancel()
+    final_sub = sttService.finalResultSubject
+      .receive(on: RunLoop.main)
+      .sink { [weak self] sentence in
+        guard let self else { return }
+        Task { @MainActor in
+          self.isProcessing = true
+          do {
+            let tx = try await Apple26TranslationService.translate(
+                sentence, from: self.myLanguage, to: self.peerLanguage)
+            self.translatedTextForMeToHear = tx
+            self.sendTextToPeer(tx)
+            self.isProcessing = false
+          } catch {
+            self.translatedTextForMeToHear = "⚠️ Translation failed"
+            self.isProcessing = false
+          }
+        }
+      }
+  }
+
+  // ─────────────────────────────── Peer messaging
+  private func sendTextToPeer(_ translated: String) {
+    guard !translated.isEmpty else { return }
+    let msg = MessageData(
+      id:                   UUID(),
+      originalText:         translated,
+      sourceLanguageCode:   peerLanguage,
+      targetLanguageCode:   peerLanguage,
+      isFinal:              true,
+      timestamp:            Date().timeIntervalSince1970
+    )
+    multipeerSession.send(message: msg, reliable: true)
+  }
+
+  private func handleReceivedMessage(_ m: MessageData) {
+    guard m.timestamp > lastReceivedTimestamp else { return }
+    lastReceivedTimestamp = m.timestamp
+
+    peerSaidText              = m.originalText
+    translatedTextForMeToHear = m.originalText
+    isProcessing              = true
+
+    let chosen = voice_for_lang[m.sourceLanguageCode]
+    ttsService.speak(text: m.originalText,
+                     languageCode: m.sourceLanguageCode,
+                     voiceIdentifier: chosen)
+  }
+
+  // ─────────────────────────────── Mic pause during playback
+  private func wireMicPauseDuringPlayback() {
+    ttsService.$isSpeaking
+      .receive(on: RunLoop.main)
+      .removeDuplicates()
+      .sink { [weak self] playing in
+        guard let self else { return }
+        if playing {
+          wasListeningPrePlayback = sttService.isListening
+          if wasListeningPrePlayback { stopListening() }
+        } else if wasListeningPrePlayback {
+          startListening()
+          wasListeningPrePlayback = false
+        }
+      }
+      .store(in: &cancellables)
+  }
+
+  // ─────────────────────────────── Connection badge
   private func wireConnectionBadge() {
     multipeerSession.$connectionState
       .receive(on: RunLoop.main)
@@ -154,63 +236,14 @@ final class TranslationViewModel: ObservableObject {
       .assign(to: &$connectionStatus)
   }
 
-  /// Pause mic while my device is **speaking** an incoming message.
-  private func wireMicPauseDuringPlayback() {
-    ttsService.$isSpeaking
-      .receive(on: RunLoop.main)
-      .removeDuplicates()
-      .sink { [weak self] speaking in
-        guard let self else { return }
-        if speaking {
-          wasListeningPrePlayback = sttService.isListening
-          if wasListeningPrePlayback {
-            (sttService as! AzureSpeechTranslationService).stop()
-          }
-        } else {
-          if wasListeningPrePlayback {
-            (sttService as! AzureSpeechTranslationService)
-              .start(src: myLanguage, dst: peerLanguage)
-            wasListeningPrePlayback = false
-          }
-          isProcessing = false
-        }
-      }
-      .store(in:&cancellables)
-  }
-
-  // ─────────────────────────────── Messaging
-  private func sendTextToPeer(_ translated: String) {
-    guard !translated.isEmpty else { return }
-    let msg = MessageData(id: UUID(),
-                          originalText:       translated,
-                          sourceLanguageCode: peerLanguage,
-                          targetLanguageCode: peerLanguage,
-                          isFinal:            true,
-                          timestamp:          Date().timeIntervalSince1970)
-    multipeerSession.send(message: msg, reliable: true)
-  }
-
-  private func handleReceivedMessage(_ m: MessageData) {
-    guard m.timestamp > lastReceivedTimestamp else { return }
-    lastReceivedTimestamp = m.timestamp
-
-    peerSaidText              = "Peer: \(m.originalText)"
-    translatedTextForMeToHear = m.originalText
-    isProcessing              = true
-
-    let chosen = voice_for_lang[m.sourceLanguageCode]   // may be nil
-    ttsService.speak(text: m.originalText,
-                     languageCode: m.sourceLanguageCode,
-                     voiceIdentifier: chosen)
-  }
-
-  // ─────────────────────────────── Voice helpers
+  // ─────────────────────────────── Voices
   private func refreshVoices() {
-    let langs = Set([myLanguage, peerLanguage]) // BCP-47
-
+    let langs = Set([myLanguage, peerLanguage])
     availableVoices = AVSpeechSynthesisVoice.speechVoices()
       .filter { langs.contains($0.language) }
-      .map { v in Voice(language:v.language, name:v.name, identifier:v.identifier) }
+      .map  { Voice(language:$0.language,
+                    name:     $0.name,
+                    identifier:$0.identifier) }
       .sorted { $0.language == $1.language ? $0.name < $1.name
                                            : $0.language < $1.language }
   }
