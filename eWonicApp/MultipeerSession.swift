@@ -82,8 +82,7 @@ final class MultipeerSession: NSObject, ObservableObject {
 
   // ────────────────────────────── Messaging
   /// Sends *message* to all connected peers.
-  /// - Non-final “live” updates use **unreliable** UDP to avoid back-pressure.
-  /// - Final chunks & control messages use **reliable** TCP.
+  /// Non-final live updates default to **unreliable** (UDP) to avoid back-pressure.
   func send(message: MessageData, reliable: Bool = true) {
     guard !session.connectedPeers.isEmpty else {
       print("⚠️ No connected peers – message not sent")
@@ -95,7 +94,8 @@ final class MultipeerSession: NSObject, ObservableObject {
     }
     do {
       let bin = try (data as NSData).compressed(using: .zlib) as Data
-     try session.send(bin, toPeers: session.connectedPeers, with: .reliable)
+      let mode: MCSessionSendDataMode = reliable ? .reliable : .unreliable
+      try session.send(bin, toPeers: session.connectedPeers, with: mode)
       print("📤 Sent \(bin.count) bytes (\(reliable ? "R" : "U")) → \(session.connectedPeers.map { $0.displayName })")
     } catch {
       let msg = "session.send error: \(error.localizedDescription)"
@@ -138,7 +138,7 @@ extension MultipeerSession: MCSessionDelegate {
         print("[Multipeer] \(id.displayName) DISCONNECTED")
         errorSubject.send("Lost connection to \(id.displayName)")
 
-        /// 🔄  Auto-recover: resume browsing so user can tap “Join” again quickly.
+        // 🔄 Auto-recover
         if !isBrowsing && connectedPeers.isEmpty { startBrowsing() }
 
       @unknown default: break
@@ -149,8 +149,8 @@ extension MultipeerSession: MCSessionDelegate {
   func session(_ s: MCSession, didReceive data: Data, fromPeer id: MCPeerID) {
     print("📨 Received \(data.count) bytes from \(id.displayName)")
     guard
-      let raw   = try? (data as NSData).decompressed(using: .zlib) as Data,
-      let msg   = try? JSONDecoder().decode(MessageData.self, from: raw)
+      let raw = try? (data as NSData).decompressed(using: .zlib) as Data,
+      let msg = try? JSONDecoder().decode(MessageData.self, from: raw)
     else {
       print("❌ Could not decode MessageData")
       return

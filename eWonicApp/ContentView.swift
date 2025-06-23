@@ -3,77 +3,89 @@
 //  eWonicApp
 //
 //  Polished UI shell for the real-time translation demo.
-//  Voice picker added 2025-06-10.
+//  🔄 2025-06-23 – Hear picker removed; each device always hears its own speak language
 //
 
 import SwiftUI
 
 struct ContentView: View {
-  @StateObject private var view_model = TranslationViewModel()
+  @StateObject private var vm = TranslationViewModel()
 
   var body: some View {
     NavigationView {
       ZStack {
         EwonicTheme.bgGradient.ignoresSafeArea()
 
-        VStack(spacing: 20) {
-          Header_bar()
+        VStack(spacing: 18) {
+          HeaderBar()
 
-          Connection_pill(status: view_model.connectionStatus,
-                          peer_count: view_model.multipeerSession.connectedPeers.count)
+          ConnectionPill(status: vm.connectionStatus,
+                         peerCount: vm.multipeerSession.connectedPeers.count)
+            .padding(.horizontal)
 
-          if !view_model.hasAllPermissions {
-            Permission_card(msg: view_model.permissionStatusMessage) {
-              view_model.checkAllPermissions()
+          // ───── Permissions + Lobby logic
+          if !vm.hasAllPermissions {
+            PermissionCard(message: vm.permissionStatusMessage) {
+              vm.checkAllPermissions()
             }
+            .padding()
 
-          } else if view_model.multipeerSession.connectionState == .connected {
+          } else if vm.multipeerSession.connectionState == .connected {
+            // ───── Speak picker
+            SpeakBar(
+              speakLang: binding(\.speak_language),
+              languages: vm.availableLanguages,
+              disabled:  vm.isProcessing || vm.sttService.isListening
+            )
+            .padding(.horizontal)
 
-            Language_bar(my_lang:   $view_model.myLanguage,
-                         peer_lang: $view_model.peerLanguage,
-                         list:      view_model.availableLanguages,
-                         disabled:  view_model.isProcessing || view_model.sttService.isListening)
+            // ───── Conversation bubbles
+            ConversationScroll(myText: vm.liveTranscript,
+                               lastIn: vm.lastIncomingTranslated)
 
-              Voice_bar(voice_for_lang: $view_model.voice_for_lang,
-                        voices:        view_model.availableVoices)
-
-            Conversation_scroll(my_text:  view_model.myTranscribedText,
-                                peer_text: view_model.peerSaidText,
-                                translated: view_model.translatedTextForMeToHear)
-
-            Record_button(is_listening:  view_model.sttService.isListening,
-                          is_processing: view_model.isProcessing,
-                          start_action:  view_model.startListening,
-                          stop_action:   view_model.stopListening)
-
-            Button("Clear History") { view_model.resetConversationHistory() }
-              .font(.caption)
-              .foregroundColor(.white.opacity(0.7))
-              .padding(.top, 4)
+            // ───── Mic control
+            RecordControl(
+              isListening: vm.sttService.isListening,
+              isProcessing: vm.isProcessing,
+              start: vm.startMicrophone,
+              stop:  vm.stopMicrophone
+            )
 
           } else {
-            PeerDiscoveryView(session: view_model.multipeerSession)
+            PeerDiscoveryView(session: vm.multipeerSession)
           }
 
           Spacer(minLength: 0)
         }
-        .padding(.horizontal)
+        .padding(.bottom)
         .onDisappear {
-          view_model.multipeerSession.disconnect()
-          view_model.sttService.stop()
+          vm.multipeerSession.disconnect()
+          vm.sttService.stopTranscribing()
         }
 
-        ErrorBanner(message: $view_model.errorMessage)
+        ErrorBanner(message: $vm.errorMessage)
       }
       .navigationBarHidden(true)
+      .alert("Error", isPresented: .constant(vm.errorMessage != nil)) {
+        Button("OK") { vm.errorMessage = nil }
+      } message: {
+        Text(vm.errorMessage ?? "Unknown error")
+      }
     }
     .accentColor(EwonicTheme.accent)
+    .animation(.easeInOut, value: vm.multipeerSession.connectionState)
+    .animation(.easeInOut, value: vm.hasAllPermissions)
+  }
+
+  private func binding<T>(_ path: ReferenceWritableKeyPath<TranslationViewModel, T>) -> Binding<T> {
+    Binding(get: { vm[keyPath: path] },
+            set: { vm[keyPath: path] = $0 })
   }
 }
 
-// ────────────────────────── COMPONENTS ──────────────────────────
+// ───────────────────────────────────────── Components ─────────────────────────────────────────
 
-private struct Header_bar: View {
+private struct HeaderBar: View {
   var body: some View {
     HStack {
       Image(systemName: "globe").font(.title2)
@@ -85,34 +97,38 @@ private struct Header_bar: View {
   }
 }
 
-private struct Connection_pill: View {
+private struct ConnectionPill: View {
   let status: String
-  let peer_count: Int
+  let peerCount: Int
   private var colour: Color {
-    if status.contains("Connected") { return EwonicTheme.pillConnected }
-    if status.contains("Connecting") { return EwonicTheme.pillConnecting }
-    return EwonicTheme.pillDisconnected
+    if status.contains("Lobby") { return .green }
+    if status.contains("Connecting") { return .yellow }
+    return .orange
   }
   var body: some View {
     HStack(spacing: 6) {
       Circle().fill(colour).frame(width: 8, height: 8)
       Text(status).font(.caption.weight(.medium))
-      if peer_count > 0 { Text("· \(peer_count)").font(.caption2) }
+      if peerCount > 0 {
+        Text("· \(peerCount + 1)/\(MultipeerSession.peerLimit)")
+          .font(.caption2)
+      }
     }
     .padding(.horizontal, 12).padding(.vertical, 6)
-    .background(colour.opacity(0.15))
+    .background(colour.opacity(0.2))
     .clipShape(Capsule())
     .foregroundColor(.white)
   }
 }
 
-private struct Permission_card: View {
-  let msg: String; let req: () -> Void
+private struct PermissionCard: View {
+  let message: String; let request: () -> Void
   var body: some View {
     VStack(spacing: 12) {
-      Text(msg).multilineTextAlignment(.center)
+      Text(message)
+        .multilineTextAlignment(.center)
         .font(.callout.weight(.medium))
-      Button("Grant Permissions", action: req)
+      Button("Grant Permissions", action: request)
         .buttonStyle(.borderedProminent)
     }
     .padding()
@@ -122,34 +138,33 @@ private struct Permission_card: View {
   }
 }
 
-private struct Language_bar: View {
-  @Binding var my_lang: String
-  @Binding var peer_lang: String
-  let list: [TranslationViewModel.Language]
-  let disabled: Bool
+// ────────────────────────── Speak picker ──────────────────────────
+
+private struct SpeakBar: View {
+  @Binding var speakLang: String
+  let languages: [TranslationViewModel.Language]
+  let disabled:  Bool
   var body: some View {
-    HStack(spacing: 12) {
-      Lang_menu(label: "I Speak", code: $my_lang, list: list)
-      Image(systemName: "arrow.left.arrow.right")
-        .foregroundColor(.white.opacity(disabled ? 0.35 : 1))
-      Lang_menu(label: "Peer Hears", code: $peer_lang, list: list)
-    }
-    .disabled(disabled)
-    .opacity(disabled ? 0.55 : 1)
+    LangMenu(label: "I Speak", code: $speakLang, languages: languages)
+      .disabled(disabled)
+      .opacity(disabled ? 0.55 : 1)
   }
 }
 
-private struct Lang_menu: View {
+private struct LangMenu: View {
   let label: String
   @Binding var code: String
-  let list: [TranslationViewModel.Language]
+  let languages: [TranslationViewModel.Language]
   var body: some View {
     Menu {
-      ForEach(list) { l in Button(l.name) { code = l.code } }
+      ForEach(languages) { l in
+        Button(l.name) { code = l.code }
+      }
     } label: {
       HStack(spacing: 4) {
         Text(label + ":")
-        Text(short(code)).fontWeight(.semibold)
+        Text(short(code))
+          .fontWeight(.semibold)
         Image(systemName: "chevron.down")
       }
       .padding(.horizontal, 10).padding(.vertical, 6)
@@ -158,88 +173,32 @@ private struct Lang_menu: View {
     }
     .foregroundColor(.white)
   }
-  private func short(_ c: String) -> String { c.split(separator: "-").first?.uppercased() ?? c }
-}
-
-// ────────────────────────── Voice picker  ──────────────────────────
-private struct Voice_bar: View {
-  @Binding var voice_for_lang: [String:String]
-  let voices: [TranslationViewModel.Voice]
-
-  var body: some View {
-    Menu {
-      ForEach(grouped(), id:\.key) { lang, list in
-        Section(header: Text(lang).font(.footnote)) {
-          ForEach(list) { v in
-            let picked = voice_for_lang[lang] == v.identifier
-            Button(role: .none) {
-              voice_for_lang[lang] = v.identifier
-              voice_for_lang = voice_for_lang            // force Combine publish
-            } label: {
-              if picked {
-                Label(v.name, systemImage: "checkmark")
-                  .font(.body.weight(.semibold))
-              } else {
-                Text(v.name)
-                  .font(.body)
-              }
-            }
-          }
-        }
-      }
-
-      if !voice_for_lang.isEmpty {
-        Divider()
-        Button("System defaults") {
-          voice_for_lang.removeAll()
-          voice_for_lang = [:]
-        }
-      }
-    } label: {
-      HStack(spacing:4){
-        Image(systemName:"speaker.wave.2.fill")
-        Text("Voices").fontWeight(.semibold)
-        Image(systemName:"chevron.down")
-      }
-      .padding(.horizontal,10).padding(.vertical,6)
-      .background(Color.white.opacity(0.12),
-                  in: RoundedRectangle(cornerRadius:8))
-    }
-    .foregroundColor(.white)
-  }
-
-  private func grouped()
-    -> [(key:String, value:[TranslationViewModel.Voice])] {
-      Dictionary(grouping: voices, by: { $0.language })
-        .sorted { $0.key < $1.key }
+  private func short(_ c: String) -> String {
+    c.split(separator: "-").first?.uppercased() ?? c
   }
 }
 
-// ────────────────────────── Conversation  ──────────────────────────
-
-private struct Conversation_scroll: View {
-  let my_text: String
-  let peer_text: String
-  let translated: String
+private struct ConversationScroll: View {
+  let myText: String
+  let lastIn: String
   var body: some View {
     ScrollView {
       VStack(spacing: 14) {
-        Bubble(label: "You",  text: my_text,
-               colour: EwonicTheme.bubbleSent, align: .leading)
-        Bubble(label: "Peer", text: peer_text,
-               colour: EwonicTheme.bubbleReceived, align: .trailing)
-        Bubble(label: "Live", text: translated,
-               colour: EwonicTheme.bubbleTranslated, align: .trailing, loud: true)
+        Bubble(label: "You", text: myText,
+               colour: .blue.opacity(0.13), align: .leading)
+        Bubble(label: "Live", text: lastIn,
+               colour: .purple.opacity(0.14), align: .trailing, loud: true)
       }
     }
     .frame(maxHeight: 330)
+    .padding(.horizontal)
   }
 }
 
 private struct Bubble: View {
   let label: String; let text: String
   let colour: Color; let align: HorizontalAlignment
-  var loud: Bool = false
+  var loud = false
   var body: some View {
     VStack(alignment: align, spacing: 3) {
       Text(label).font(.caption).foregroundColor(.white.opacity(0.7))
@@ -255,42 +214,47 @@ private struct Bubble: View {
   }
 }
 
-private struct Record_button: View {
-  let is_listening: Bool
-  let is_processing: Bool
-  let start_action: () -> Void
-  let stop_action: () -> Void
+private struct RecordControl: View {
+  let isListening: Bool
+  let isProcessing: Bool
+  let start: () -> Void
+  let stop:  () -> Void
   var body: some View {
-    Button { is_listening ? stop_action() : start_action() } label: {
+    Button { isListening ? stop() : start() } label: {
       HStack {
-        if is_processing { ProgressView().progressViewStyle(.circular) }
-        Image(systemName: is_listening ? "stop.fill" : "mic.fill")
-        Text(is_listening ? "Stop" : (is_processing ? "Processing…" : "Start"))
+        if isListening {
+          ProgressView()
+            .progressViewStyle(.circular)
+          Text("Stop")
+        } else if isProcessing {
+          ProgressView()
+            .progressViewStyle(.circular)
+          Text("Processing…")
+        } else {
+          Image(systemName: "mic.fill")
+          Text("Start")
+        }
       }
       .frame(maxWidth: .infinity)
       .padding()
-      .background(is_listening ? Color.red :
-                    (is_processing ? Color.orange : EwonicTheme.accent),
+      .background(isListening ? Color.red
+                 : (isProcessing ? Color.orange : EwonicTheme.accent),
                   in: RoundedRectangle(cornerRadius: 14))
       .foregroundColor(.white)
       .font(.headline)
     }
-    .disabled(is_processing && !is_listening)
+    .disabled(isProcessing && !isListening)
+    .padding(.horizontal)
   }
 }
-
-// ────────────────────────── PEER DISCOVERY (unchanged) ──────────────────────────
-// … (rest of PeerDiscoveryView stays exactly the same) …
-
-
-// ────────────────────────── PEER DISCOVERY ──────────────────────────
+// ────────────────────────── LOBBY DISCOVERY ──────────────────────────
 
 private struct PeerDiscoveryView: View {
   @ObservedObject var session: MultipeerSession
 
   var body: some View {
     VStack(spacing: 18) {
-      Text("Connect to a Peer")
+      Text("Create or Join a Lobby")
         .font(.title2.weight(.semibold))
 
       HStack(spacing: 20) {
@@ -298,7 +262,7 @@ private struct PeerDiscoveryView: View {
           session.stopBrowsing()
           session.startHosting()
         } label: {
-          Label("Host", systemImage: "antenna.radiowaves.left.and.right")
+          Label("Host Lobby", systemImage: "antenna.radiowaves.left.and.right")
             .frame(maxWidth: .infinity)
             .padding()
         }
@@ -309,7 +273,7 @@ private struct PeerDiscoveryView: View {
           session.stopHosting()
           session.startBrowsing()
         } label: {
-          Label("Join", systemImage: "magnifyingglass")
+          Label("Join Lobby", systemImage: "magnifyingglass")
             .frame(maxWidth: .infinity)
             .padding()
         }
@@ -319,16 +283,16 @@ private struct PeerDiscoveryView: View {
       .buttonStyle(.plain)
 
       if !session.discoveredPeers.isEmpty {
-        Text("Found Peers:")
+        Text("Available Hosts:")
           .font(.headline)
 
         // 🔑 Fix: hide UITableView background + clear each row
         List(session.discoveredPeers, id: \.self) { peer in
           Button(peer.displayName) { session.invitePeer(peer) }
-            .listRowBackground(Color.clear)        // row bg = transparent
+            .listRowBackground(Color.clear)
         }
         .listStyle(.plain)
-        .scrollContentBackground(.hidden)          // table bg = transparent
+        .scrollContentBackground(.hidden)
         .frame(maxHeight: 220)
 
       } else if session.isBrowsing || session.isAdvertising {
@@ -354,6 +318,8 @@ private struct PeerDiscoveryView: View {
   }
 }
 
+// ────────────────────────── ERROR BANNER ──────────────────────────
+
 private struct ErrorBanner: View {
   @Binding var message: String?
   var body: some View {
@@ -374,14 +340,14 @@ private struct ErrorBanner: View {
           }
         }
         .padding()
-        .background(Color.red.opacity(0.95), in: RoundedRectangle(cornerRadius: 14))
+        .background(Color.red.opacity(0.95),
+                    in: RoundedRectangle(cornerRadius: 14))
         .padding()
       }
       .transition(.move(edge: .bottom).combined(with: .opacity))
     }
   }
 }
-
 
 // ────────────────────────── PREVIEW ──────────────────────────
 
@@ -390,3 +356,4 @@ struct ContentView_Previews: PreviewProvider {
     ContentView().environment(\.colorScheme, .dark)
   }
 }
+

@@ -175,8 +175,8 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
       self.recognizer  = nil
       self.isListening = false
       var msg = "Azure cancelled (\(ev.errorCode.rawValue)): \(ev.errorDetails)"
-      if ev.errorDetails.lowercased().contains("network") ||
-         ev.errorDetails.lowercased().contains("internet") {
+        if (ev.errorDetails?.lowercased().contains("network"))! ||
+            ev.errorDetails!.lowercased().contains("internet") {
         msg += "\nPlease move to an area with better signal."
       }
       print("⚠️ \(msg)")
