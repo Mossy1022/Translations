@@ -36,6 +36,9 @@ final class MultipeerSession: NSObject, ObservableObject {
   // ────────────────────────────── Callback to VM
   var onMessageReceived: ((MessageData) -> Void)?
 
+  // Error messages for UI
+  let errorSubject = PassthroughSubject<String,Never>()
+
   // ────────────────────────────── Life-cycle
   override init() {
     super.init()
@@ -95,7 +98,9 @@ final class MultipeerSession: NSObject, ObservableObject {
      try session.send(bin, toPeers: session.connectedPeers, with: .reliable)
       print("📤 Sent \(bin.count) bytes (\(reliable ? "R" : "U")) → \(session.connectedPeers.map { $0.displayName })")
     } catch {
-      print("❌ session.send error: \(error.localizedDescription)")
+      let msg = "session.send error: \(error.localizedDescription)"
+      print("❌ \(msg)")
+      errorSubject.send(msg)
     }
   }
 
@@ -131,6 +136,7 @@ extension MultipeerSession: MCSessionDelegate {
       case .notConnected:
         connectedPeers.removeAll { $0 == id }
         print("[Multipeer] \(id.displayName) DISCONNECTED")
+        errorSubject.send("Lost connection to \(id.displayName)")
 
         /// 🔄  Auto-recover: resume browsing so user can tap “Join” again quickly.
         if !isBrowsing && connectedPeers.isEmpty { startBrowsing() }
@@ -171,7 +177,9 @@ extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
     invitationHandler(accept, accept ? session : nil)
   }
   func advertiser(_:MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-    print("Advertiser error: \(error.localizedDescription)")
+    let msg = "Advertiser error: \(error.localizedDescription)"
+    print(msg)
+    errorSubject.send(msg)
   }
 }
 
@@ -187,6 +195,8 @@ extension MultipeerSession: MCNearbyServiceBrowserDelegate {
     print("🔴 Lost peer \(id.displayName)")
   }
   func browser(_:MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-    print("Browser error: \(error.localizedDescription)")
+    let msg = "Browser error: \(error.localizedDescription)"
+    print(msg)
+    errorSubject.send(msg)
   }
 }
