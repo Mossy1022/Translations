@@ -62,6 +62,8 @@ struct ContentView: View {
           view_model.multipeerSession.disconnect()
           view_model.sttService.stop()
         }
+
+        ErrorBanner(message: $view_model.errorMessage)
       }
       .navigationBarHidden(true)
     }
@@ -349,6 +351,34 @@ private struct PeerDiscoveryView: View {
     .background(Color.white.opacity(0.05),
                 in: RoundedRectangle(cornerRadius: 14))
     .foregroundColor(.white)
+  }
+}
+
+private struct ErrorBanner: View {
+  @Binding var message: String?
+  var body: some View {
+    if let msg = message {
+      VStack {
+        Spacer()
+        HStack(alignment: .top, spacing: 8) {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .foregroundColor(.white)
+          Text(msg)
+            .font(.subheadline)
+            .foregroundColor(.white)
+            .multilineTextAlignment(.leading)
+          Spacer(minLength: 4)
+          Button(action: { withAnimation { message = nil } }) {
+            Image(systemName: "xmark.circle.fill")
+              .foregroundColor(.white)
+          }
+        }
+        .padding()
+        .background(Color.red.opacity(0.95), in: RoundedRectangle(cornerRadius: 14))
+        .padding()
+      }
+      .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
   }
 }
 

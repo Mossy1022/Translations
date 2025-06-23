@@ -39,6 +39,7 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
   let finalResult       = PassthroughSubject<String,Never>() // translated sentence
   let sourceFinalResult = PassthroughSubject<String,Never>() // raw sentence
   let audioChunk        = PassthroughSubject<Data,  Never>() // (unused)
+  let errorSubject      = PassthroughSubject<String,Never>()
 
   private let partialStreamCont : AsyncStream<String>.Continuation
   public  let partialStream     : AsyncStream<String>
@@ -107,7 +108,12 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
       isListening = true
 
     } catch {
-      print("❌ Azure recognizer failed: \(error)")
+      var msg = "Azure recognizer failed: \(error.localizedDescription)"
+      if msg.lowercased().contains("network") || msg.lowercased().contains("internet") {
+        msg += "\nPlease move to an area with better signal."
+      }
+      print("❌ \(msg)")
+      errorSubject.send(msg)
       AudioSessionManager.shared.end()
     }
   }
@@ -168,7 +174,13 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
       let wasListening = self.isListening
       self.recognizer  = nil
       self.isListening = false
-      print("⚠️ Azure cancelled (\(ev.errorCode.rawValue)) – \(ev.errorDetails)")
+      var msg = "Azure cancelled (\(ev.errorCode.rawValue)): \(ev.errorDetails)"
+      if ev.errorDetails.lowercased().contains("network") ||
+         ev.errorDetails.lowercased().contains("internet") {
+        msg += "\nPlease move to an area with better signal."
+      }
+      print("⚠️ \(msg)")
+      errorSubject.send(msg)
       AudioSessionManager.shared.end()
       if wasListening {
         DispatchQueue.main.async {
