@@ -51,8 +51,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				"Untitled 2.swift",
-				Untitled.swift,
 			);
 			target = 1C46D5EB2DDA85400046F66D /* eWonicApp */;
 		};

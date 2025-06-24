@@ -12,10 +12,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
-        print(Bundle.main.infoDictionary?.keys.sorted() ?? [])
-        
-        AudioSessionManager.shared.configure()
+        // Override point for customization after application launc
+//        AudioSessionManager.shared.configure()
 
         return true
     }

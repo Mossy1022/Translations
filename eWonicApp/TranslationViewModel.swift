@@ -214,15 +214,36 @@ final class TranslationViewModel: ObservableObject {
   }
 
   // ─────────────────────────────── Voice helpers
-  private func refreshVoices() {
-    let langs = Set([myLanguage, peerLanguage]) // BCP-47
+    private func refreshVoices() {
+      let langs = Set([myLanguage, peerLanguage])          // BCP-47 codes
 
-    availableVoices = AVSpeechSynthesisVoice.speechVoices()
-      .filter { langs.contains($0.language) }
-      .map { v in Voice(language:v.language, name:v.name, identifier:v.identifier) }
-      .sorted { $0.language == $1.language ? $0.name < $1.name
-                                           : $0.language < $1.language }
-  }
+      DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        guard let self else { return }
+
+        // 1️⃣ pull the raw list
+        let rawVoices = AVSpeechSynthesisVoice.speechVoices()
+
+        // 2️⃣ keep only the two active languages
+        let filtered  = rawVoices.filter { langs.contains($0.language) }
+
+        // 3️⃣ convert to our light-weight model
+        let converted = filtered.map {
+          Voice(language: $0.language,
+                name:      $0.name,
+                identifier:$0.identifier)
+        }
+
+        // 4️⃣ stable sort: language → name
+        let sorted    = converted.sorted {
+          $0.language == $1.language ? $0.name < $1.name
+                                     : $0.language < $1.language
+        }
+
+        // 5️⃣ publish on the main thread
+        DispatchQueue.main.async { self.availableVoices = sorted }
+      }
+    }
+
 
   // ─────────────────────────────── Utilities
   func resetConversationHistory() {
