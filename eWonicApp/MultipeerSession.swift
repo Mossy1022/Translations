@@ -92,13 +92,17 @@ final class MultipeerSession: NSObject, ObservableObject {
   func send(message: MessageData, reliable: Bool = true) {
     mpq.async { [self] in
       guard !session.connectedPeers.isEmpty else {
-        print("⚠️ No connected peers – message not sent")
+        let msg = "No connected peers – message not sent"
+        print("⚠️ \(msg)")
+        errorSubject.send(msg)
         return
       }
       guard let raw = try? JSONEncoder().encode(message),
             let bin = try? (raw as NSData).compressed(using: .zlib) as Data
       else {
-        print("❌ Failed to encode/compress MessageData")
+        let msg = "Failed to encode/compress MessageData"
+        print("❌ \(msg)")
+        errorSubject.send(msg)
         return
       }
       do {
@@ -169,6 +173,7 @@ extension MultipeerSession: MCSessionDelegate {
         self.connectionState = .notConnected
       }
       print("[Multipeer] \(id.displayName) DISCONNECTED")
+      errorSubject.send("Peer \(id.displayName) disconnected")
       if connectedPeers.isEmpty { startBrowsing() }
 
     @unknown default: break
@@ -181,7 +186,9 @@ extension MultipeerSession: MCSessionDelegate {
         let raw = try? (data as NSData).decompressed(using: .zlib) as Data,
         let msg = try? JSONDecoder().decode(MessageData.self, from: raw)
       else {
-        print("❌ Could not decode MessageData")
+        let err = "Failed to decode message from \(id.displayName)"
+        print("❌ \(err)")
+        errorSubject.send(err)
         return
       }
       DispatchQueue.main.async {
