@@ -98,7 +98,10 @@ final class NativeSTTService: NSObject, ObservableObject {
 
   // ───────────── Setup recognizer ─────────────
   func setupSpeechRecognizer(languageCode: String) {
-    guard let r = SFSpeechRecognizer(locale: Locale(identifier: languageCode)) else { return }
+    guard let r = SFSpeechRecognizer(locale: Locale(identifier: languageCode)) else {
+        errorSubject.send(.taskError("Speech recognizer unavailable for \(languageCode)"))
+        return
+    }
     speechRecognizer = r
     r.delegate = self
     print("[NativeSTT] recognizer ready – lang: \(languageCode), on-device:\(r.supportsOnDeviceRecognition)")
@@ -153,7 +156,11 @@ final class NativeSTTService: NSObject, ObservableObject {
       }
 
       do { audioEngine.prepare(); try audioEngine.start() }
-      catch { print("⚠️ audio engine start failed: \(error)") }
+      catch {
+        let msg = "Audio engine start failed: \(error.localizedDescription)"
+        print("⚠️ \(msg)")
+        errorSubject.send(.taskError(msg))
+      }
     }
 
   private func removeTap() {
@@ -204,14 +211,16 @@ final class NativeSTTService: NSObject, ObservableObject {
     }
 
     private func handle(error e: NSError) {
-        
+
         print("[NativeSTT] DEBUG  domain=\(e.domain)  code=\(e.code)  desc=\(e.localizedDescription)")
 
         // 1) “No speech detected” → schedule (but let it be cancelled)
         if e.domain == "kAFAssistantErrorDomain",
            InternalErr.noSpeechCodes.contains(e.code) {
 
+          let msg = "No speech detected"
           print("[NativeSTT] no speech – scheduling soft rotate")
+          errorSubject.send(.taskError(msg))
           pendingSoftRotate?.cancel()                      // cancel any previous one
           let work = DispatchWorkItem { [weak self] in
             self?.rotate()
@@ -225,13 +234,17 @@ final class NativeSTTService: NSObject, ObservableObject {
 
       // 2) Daemon‐crashed (1101) → full reboot
       if e.domain == "kAFAssistantErrorDomain", e.code == InternalErr.svcCrash {
+        let msg = "Speech recogniser service crashed"
         print("[NativeSTT] recogniser service crashed – hard reboot")
+        errorSubject.send(.taskError(msg))
         hardRebootRecognizer()
         return
       }
 
       // 3) Any other error → a normal rotate()
-      print("[NativeSTT] fatal error – \(e.localizedDescription) – soft rotate")
+      let msg = "\(e.localizedDescription)"
+      print("[NativeSTT] fatal error – \(msg) – soft rotate")
+      errorSubject.send(.recognitionError(e))
       rotate()
     }
     

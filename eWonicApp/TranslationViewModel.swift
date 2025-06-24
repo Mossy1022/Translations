@@ -81,6 +81,10 @@ final class TranslationViewModel: ObservableObject {
       .receive(on: RunLoop.main)
       .sink { [weak self] msg in self?.errorMessage = msg }
       .store(in: &cancellables)
+    AudioSessionManager.shared.errorSubject
+      .receive(on: RunLoop.main)
+      .sink { [weak self] msg in self?.errorMessage = msg }
+      .store(in: &cancellables)
     multipeerSession.onMessageReceived = { [weak self] m in
       self?.handleReceivedMessage(m)
     }
