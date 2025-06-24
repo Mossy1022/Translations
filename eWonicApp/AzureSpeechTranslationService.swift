@@ -172,8 +172,11 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
     recognizer!.addCanceledEventHandler { [weak self] _, ev in
       guard let self else { return }
       let wasListening = self.isListening
-      self.recognizer  = nil
-      self.isListening = false
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.recognizer  = nil
+        self.isListening = false
+      }
       var msg = "Azure cancelled (\(ev.errorCode.rawValue)): \(ev.errorDetails)"
         if ev.errorDetails!.lowercased().contains("network") ||
             ev.errorDetails!.lowercased().contains("internet") {
