@@ -1,16 +1,27 @@
+//
+//  MultipeerSession.swift
+//  eWonicApp
+//
+//  Thread‑safe Swift‑6 version.
+//  • Class stays @MainActor for normal API calls.
+//  • Every delegate callback is marked `nonisolated`, then
+//    re‑dispatched onto the main actor before touching state.
+
+
 import MultipeerConnectivity
 import Combine
 import os.log
 
 private let SERVICE_TYPE = "ewonic-xlat"
-private let mpq = DispatchQueue(label: "ewonic.multipeer", qos: .userInitiated)
+private let LOG = Logger(subsystem: "com.evansoasis.ewonic", category: "multipeer")
 
-private let log = Logger(subsystem: "com.evansoasis.ewonic",  // ← ADD
-                         category: "multipeer")
-
+// ──────────────────────────────────────────────────────────────
+// MARK: – Model
+// ──────────────────────────────────────────────────────────────
+@MainActor
 final class MultipeerSession: NSObject, ObservableObject {
 
-  // ────────────────────────────── Public state
+  // ───────── Public state
   static let peerLimit = 6
 
   @Published private(set) var connectedPeers  : [MCPeerID] = []
@@ -20,223 +31,241 @@ final class MultipeerSession: NSObject, ObservableObject {
   @Published private(set) var isBrowsing      = false
   @Published              var receivedMessage : MessageData?
 
-  // ────────────────────────────── MC plumbing
+  // ───────── Core plumbing
   private let myPeerID = MCPeerID(displayName: UIDevice.current.name)
 
-    private lazy var session: MCSession = {
-      let s = MCSession(
-        peer:               myPeerID,
-        securityIdentity:   nil,
-        encryptionPreference: .optional   // was .required
-      )
-      s.delegate = self
-      return s
-    }()
+  private lazy var session: MCSession = {
+    let s = MCSession(peer: myPeerID,
+                      securityIdentity: nil,
+                      encryptionPreference: .optional)
+    s.delegate = self
+    return s
+  }()
 
-  private lazy var advertiser = MCNearbyServiceAdvertiser(
-    peer: myPeerID, discoveryInfo: nil, serviceType: SERVICE_TYPE)
+  private lazy var advertiser = MCNearbyServiceAdvertiser(peer: myPeerID,
+                                                          discoveryInfo: nil,
+                                                          serviceType: SERVICE_TYPE)
 
-  private lazy var browser = MCNearbyServiceBrowser(
-    peer: myPeerID, serviceType: SERVICE_TYPE)
+  private lazy var browser = MCNearbyServiceBrowser(peer: myPeerID,
+                                                    serviceType: SERVICE_TYPE)
 
-  // ────────────────────────────── Callback
-  var onMessageReceived: ((MessageData) -> Void)?
-  let errorSubject = PassthroughSubject<String,Never>()
+  // ───────── Callbacks
+  var  onMessageReceived : ((MessageData) -> Void)?
+  let  errorSubject      = PassthroughSubject<String, Never>()
 
-  // ────────────────────────────── Life-cycle
+  // ───────── Life‑cycle
   override init() {
     super.init()
     advertiser.delegate = self
-    browser.delegate    = self
-  }
-  deinit { disconnect() }
-
-  // ────────────────────────────── Host / Join
-    func startHosting() {
-      mpq.async { [self] in
-        guard !isAdvertising else { return }
-        advertiser.startAdvertisingPeer()
-        DispatchQueue.main.async { self.isAdvertising = true }
-        print("[Multipeer] Hosting as \(myPeerID.displayName)")
-      }
-    }
-
-  func stopHosting() {
-    mpq.async { [self] in
-      guard isAdvertising else { return }
-      advertiser.stopAdvertisingPeer()
-      DispatchQueue.main.async { self.isAdvertising = false }
-      print("[Multipeer] Stopped hosting")
-    }
+    browser  .delegate = self
   }
 
-    func startBrowsing() {
-      mpq.async { [self] in
-        guard !isBrowsing else { return }
-        browser.startBrowsingForPeers()
-        DispatchQueue.main.async { self.isBrowsing = true }
-        print("[Multipeer] Browsing for peers…")
-      }
-    }
+  deinit { Task { @MainActor in disconnect() } }
 
-  func stopBrowsing() {
-    mpq.async { [self] in
-      guard isBrowsing else { return }
-      browser.stopBrowsingForPeers()
-      DispatchQueue.main.async { self.isBrowsing = false }
-      print("[Multipeer] Stopped browsing")
-    }
+  // ──────────────────────────────────────────────────────────
+  // MARK: – Host / Join helpers
+  // ──────────────────────────────────────────────────────────
+  func startHosting() {
+    guard !isAdvertising else { return }
+    advertiser.startAdvertisingPeer()
+    isAdvertising = true
+    LOG.debug("[Multipeer] Hosting")
   }
 
-  // ────────────────────────────── Messaging
-  func send(message: MessageData, reliable: Bool = true) {
-    mpq.async { [self] in
-      guard !session.connectedPeers.isEmpty else {
-        print("⚠️ No connected peers – message not sent")
+  func startBrowsing() {
+    guard !isBrowsing else { return }
+    browser.startBrowsingForPeers()
+    isBrowsing = true
+    LOG.debug("[Multipeer] Browsing")
+  }
+
+  /// Stop both advertiser & browser.
+  func stopActivities() {
+    advertiser.stopAdvertisingPeer()
+    browser.stopBrowsingForPeers()
+    isAdvertising = false
+    isBrowsing    = false
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // MARK: – Messaging
+  // ──────────────────────────────────────────────────────────
+  func send(message msg: MessageData, reliable: Bool = true) {
+
+    Task.detached(priority: .userInitiated) { [weak self] in
+      guard let self else { return }
+
+      // encode
+      guard let raw = try? JSONEncoder().encode(msg) else {
+        LOG.error("❌ Failed to encode MessageData")
         return
       }
-      guard let raw = try? JSONEncoder().encode(message),
-            let bin = try? (raw as NSData).compressed(using: .zlib) as Data
-      else {
-        print("❌ Failed to encode/compress MessageData")
-        return
-      }
-      do {
-        let mode: MCSessionSendDataMode = reliable ? .reliable : .unreliable
-        try session.send(bin, toPeers: session.connectedPeers, with: mode)
-        print("📤 Sent \(bin.count) B (\(mode == .reliable ? "R" : "U"))")
-      } catch {
-        let msg = "session.send error: \(error.localizedDescription)"
-        print("❌ \(msg)")
-        errorSubject.send(msg)
+      // compress
+      let bin = (try? (raw as NSData).compressed(using: .zlib) as Data) ?? raw
+
+      await MainActor.run {
+          guard !self.session.connectedPeers.isEmpty else { return }
+        do {
+            try self.session.send(bin,
+                                  toPeers: self.session.connectedPeers,
+                           with: reliable ? .reliable : .unreliable)
+          LOG.debug("📤 Sent \(bin.count) B")
+        } catch {
+          let txt = "session.send error: \(error.localizedDescription)"
+          LOG.error("❌ \(txt)")
+            self.errorSubject.send(txt)
+        }
       }
     }
   }
 
-    func invitePeer(_ id: MCPeerID) {
-      mpq.async { [self] in
-        quiesceRadio()                                         // new
-        browser.invitePeer(id,
-                           to: session,
-                           withContext: nil,
-                           timeout: 12)                        // was 30
-      }
-    }
-
-
+  // ──────────────────────────────────────────────────────────
+  // MARK: – Disconnect
+  // ──────────────────────────────────────────────────────────
   func disconnect() {
-    mpq.async { [self] in
-      session.disconnect()
-      advertiser.stopAdvertisingPeer()
-      browser.stopBrowsingForPeers()
-      DispatchQueue.main.async {
-        self.connectedPeers.removeAll()
-        self.discoveredPeers.removeAll()
-        self.connectionState = .notConnected
-        self.isAdvertising  = false
-        self.isBrowsing     = false
-      }
-      print("[Multipeer] Disconnected")
-    }
+    session.disconnect()
+    stopActivities()
+    connectedPeers.removeAll()
+    discoveredPeers.removeAll()
+    connectionState = .notConnected
+    LOG.debug("[Multipeer] Disconnected")
   }
 }
 
-// ────────────────────────────── MCSessionDelegate
+// ──────────────────────────────────────────────────────────────
+// MARK: – MCSessionDelegate  (all methods nonisolated)
+// ──────────────────────────────────────────────────────────────
 extension MultipeerSession: MCSessionDelegate {
 
-  func session(_ s: MCSession, peer id: MCPeerID, didChange state: MCSessionState) {
-    switch state {
-    case .connected:
-      mpq.async { [self] in
-        advertiser.stopAdvertisingPeer()
-        browser.stopBrowsingForPeers()
-        DispatchQueue.main.async {
-            if !self.connectedPeers.contains(id) { self.connectedPeers.append(id) }
-            self.connectionState = .connected
-            self.isAdvertising   = false
-            self.isBrowsing      = false
+  nonisolated
+  func session(_ s: MCSession,
+               peer id: MCPeerID,
+               didChange state: MCSessionState)
+  {
+    Task { @MainActor in
+      switch state {
+
+      case .connected:
+        if !connectedPeers.contains(id) { connectedPeers.append(id) }
+        if connectedPeers.count < Self.peerLimit {
+          startHosting(); startBrowsing()
+        } else {
+          stopActivities()
         }
-        print("[Multipeer] \(id.displayName) CONNECTED")
+        connectionState = .connected
+        LOG.debug("[Multipeer] \(id.displayName) CONNECTED")
+
+      case .connecting:
+        connectionState = .connecting
+        LOG.debug("[Multipeer] \(id.displayName) CONNECTING…")
+
+      case .notConnected:
+        connectedPeers.removeAll { $0 == id }
+        startHosting(); startBrowsing()
+        connectionState = .notConnected
+        errorSubject.send("Connection to \(id.displayName) lost.")
+        LOG.debug("[Multipeer] \(id.displayName) DISCONNECTED")
+
+      @unknown default: break
       }
-
-    case .connecting:
-        DispatchQueue.main.async { self.connectionState = .connecting }
-        print("[Multipeer] \(id.displayName) CONNECTING…")
-
-    case .notConnected:
-      DispatchQueue.main.async {
-        self.connectedPeers.removeAll { $0 == id }
-        self.connectionState = .notConnected
-      }
-      print("[Multipeer] \(id.displayName) DISCONNECTED")
-      if connectedPeers.isEmpty { startBrowsing() }
-
-    @unknown default: break
     }
   }
 
-  func session(_ s: MCSession, didReceive data: Data, fromPeer id: MCPeerID) {
-    mpq.async { [self] in
-      guard
-        let raw = try? (data as NSData).decompressed(using: .zlib) as Data,
-        let msg = try? JSONDecoder().decode(MessageData.self, from: raw)
-      else {
-        print("❌ Could not decode MessageData")
+  nonisolated
+  func session(_: MCSession,
+               didReceive data: Data,
+               fromPeer _: MCPeerID)
+  {
+    Task.detached { [weak self] in
+      guard let self else { return }
+      let dec = (try? (data as NSData).decompressed(using: .zlib) as Data) ?? data
+      guard let msg = try? JSONDecoder().decode(MessageData.self, from: dec) else {
+        LOG.error("❌ Could not decode MessageData")
         return
       }
-      DispatchQueue.main.async {
-        self.receivedMessage = msg
-        self.onMessageReceived?(msg)
+      await MainActor.run {
+          self.receivedMessage = msg
+          self.onMessageReceived?(msg)
       }
     }
   }
 
-  func session(_:MCSession, didReceive _:InputStream, withName _:String, fromPeer _:MCPeerID) {}
-  func session(_:MCSession, didStartReceivingResourceWithName _:String, fromPeer _:MCPeerID, with _:Progress) {}
-  func session(_:MCSession, didFinishReceivingResourceWithName _:String, fromPeer _:MCPeerID, at _:URL?, withError _:Error?) {}
+  // remaining delegate stubs (empty bodies)
+  nonisolated
+  func session(_: MCSession, didReceive _: InputStream,
+               withName _: String, fromPeer _: MCPeerID) {}
+
+  nonisolated
+  func session(_: MCSession, didStartReceivingResourceWithName _: String,
+               fromPeer _: MCPeerID, with _: Progress) {}
+
+  nonisolated
+  func session(_: MCSession, didFinishReceivingResourceWithName _: String,
+               fromPeer _: MCPeerID, at _: URL?, withError _: Error?) {}
 }
 
-// ────────────────────────────── Advertiser / Browser
+// ──────────────────────────────────────────────────────────────
+// MARK: – Advertiser / Browser delegates (nonisolated)
+// ──────────────────────────────────────────────────────────────
 extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
-    func advertiser(_:MCNearbyServiceAdvertiser,
-                    didReceiveInvitationFromPeer id: MCPeerID,
-                    withContext _:Data?,
-                    invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-      quiesceRadio()                                           // new
-      let accept = connectedPeers.count < MultipeerSession.peerLimit
+
+  nonisolated
+  func advertiser(_: MCNearbyServiceAdvertiser,
+                  didReceiveInvitationFromPeer id: MCPeerID,
+                  withContext _: Data?,
+                  invitationHandler: @escaping (Bool, MCSession?) -> Void)
+  {
+    Task { @MainActor in
+      let accept = connectedPeers.count < Self.peerLimit
       invitationHandler(accept, accept ? session : nil)
     }
+  }
 
-  func advertiser(_:MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-    DispatchQueue.main.async {
-      self.errorSubject.send("Advertiser error: \(error.localizedDescription)")
+  nonisolated
+  func advertiser(_: MCNearbyServiceAdvertiser,
+                  didNotStartAdvertisingPeer error: Error)
+  {
+    Task { @MainActor in
+      errorSubject.send("Advertiser error: \(error.localizedDescription)")
     }
   }
-    
-    private func quiesceRadio() {
-      advertiser.stopAdvertisingPeer()
-      browser.stopBrowsingForPeers()
-      DispatchQueue.main.async {
-        self.isAdvertising = false
-        self.isBrowsing    = false
-      }
-    }
 }
 
 extension MultipeerSession: MCNearbyServiceBrowserDelegate {
-  func browser(_:MCNearbyServiceBrowser, foundPeer id: MCPeerID, withDiscoveryInfo _: [String:String]?) {
-    DispatchQueue.main.async {
-      if !self.discoveredPeers.contains(id) { self.discoveredPeers.append(id) }
+
+  nonisolated
+  func browser(_: MCNearbyServiceBrowser,
+               foundPeer id: MCPeerID,
+               withDiscoveryInfo _: [String : String]?)
+  {
+    Task { @MainActor in
+      if !discoveredPeers.contains(id) { discoveredPeers.append(id) }
+      LOG.debug("🟢 Found peer \(id.displayName)")
     }
-    print("🟢 Found peer \(id.displayName)")
   }
-  func browser(_:MCNearbyServiceBrowser, lostPeer id: MCPeerID) {
-    DispatchQueue.main.async { self.discoveredPeers.removeAll { $0 == id } }
-    print("🔴 Lost peer \(id.displayName)")
-  }
-  func browser(_:MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-    DispatchQueue.main.async {
-      self.errorSubject.send("Browser error: \(error.localizedDescription)")
+
+  nonisolated
+  func browser(_: MCNearbyServiceBrowser, lostPeer id: MCPeerID) {
+    Task { @MainActor in
+      discoveredPeers.removeAll { $0 == id }
+      LOG.debug("🔴 Lost peer \(id.displayName)")
     }
+  }
+
+  nonisolated
+  func browser(_: MCNearbyServiceBrowser,
+               didNotStartBrowsingForPeers error: Error)
+  {
+    Task { @MainActor in
+      errorSubject.send("Browser error: \(error.localizedDescription)")
+    }
+  }
+
+  /// Convenience wrapper for the 'Join' button.
+  func invitePeer(_ peer: MCPeerID, timeout: TimeInterval = 12) {
+    browser.invitePeer(peer,
+                       to: session,
+                       withContext: nil,
+                       timeout: timeout)
   }
 }

@@ -11,6 +11,8 @@ import AVFoundation
 import Combine
 
 /// Thin wrapper around `AVSpeechSynthesizer`
+///
+@MainActor
 final class AppleTTSService: NSObject, ObservableObject {
 
   private let synthesizer = AVSpeechSynthesizer()
@@ -109,9 +111,17 @@ final class AppleTTSService: NSObject, ObservableObject {
 // ─────────────────────────────────────────────
 
 extension AppleTTSService: AVSpeechSynthesizerDelegate {
-  func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish _: AVSpeechUtterance) {
-    isSpeaking = false
-    AudioSessionManager.shared.end()
-    finishedSubject.send(())
-  }
+
+    /// `AVSpeechSynthesizerDelegate` must be non-isolated.
+    nonisolated func speechSynthesizer(_ s: AVSpeechSynthesizer,
+                                       didFinish _: AVSpeechUtterance)
+    {
+        // Hop back to the Main-Actor before mutating actor-isolated state.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isSpeaking = false
+            AudioSessionManager.shared.end()
+            self.finishedSubject.send(())
+        }
+    }
 }

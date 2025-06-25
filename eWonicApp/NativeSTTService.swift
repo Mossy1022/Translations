@@ -32,6 +32,9 @@ private enum InternalErr {
 // ───────────── Service ─────────────
 @MainActor
 final class NativeSTTService: NSObject, ObservableObject {
+    
+    func pause()  { ignoreBuffers = true  }   // stop feeding recogniser
+    func resume() { ignoreBuffers = false }   // resume feeding
 
   // MARK: – Engine plumbing
   private var speechRecognizer: SFSpeechRecognizer?
@@ -51,6 +54,10 @@ final class NativeSTTService: NSObject, ObservableObject {
   private let silenceTimeout:    TimeInterval = 1.5
   private let stableTimeout:     TimeInterval = 1.2
   private let noSpeechCode                    = 203   // Apple private
+    
+ private var isRebooting = false        // new
+    private var noSpeechStrike = 0
+
 
     
   // MARK: – Published (same spelling!)
@@ -211,14 +218,18 @@ final class NativeSTTService: NSObject, ObservableObject {
         if e.domain == "kAFAssistantErrorDomain",
            InternalErr.noSpeechCodes.contains(e.code) {
 
-          print("[NativeSTT] no speech – scheduling soft rotate")
-          pendingSoftRotate?.cancel()                      // cancel any previous one
+          noSpeechStrike += 1
+         let delay = min(pow(2.0, Double(noSpeechStrike)) * 0.25, 4.0) // 0.25 s → 4 s
+            print(String(format: "[NativeSTT] no speech – rotate in %.2f s", delay))
+
+          pendingSoftRotate?.cancel()
           let work = DispatchWorkItem { [weak self] in
+            self?.noSpeechStrike = 0                        // reset on success
             self?.rotate()
             self?.pendingSoftRotate = nil
           }
           pendingSoftRotate = work
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+          DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
           return
         }
 
@@ -254,6 +265,8 @@ final class NativeSTTService: NSObject, ObservableObject {
   }
     
     private func hardRebootRecognizer() {
+      guard !isRebooting else { return }
+      isRebooting = true
       let currentLang = speechRecognizer?.locale.identifier ?? "en-US"
       teardownTask()
       removeTap()
@@ -265,6 +278,7 @@ final class NativeSTTService: NSObject, ObservableObject {
         self.installTap()
         self.setupSpeechRecognizer(languageCode: currentLang)
         self.spinUpTask()
+        self.isRebooting = false
       }
     }
 

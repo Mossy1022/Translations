@@ -8,10 +8,9 @@
 import Foundation
 
 struct MessageData: Codable {
-    let id: UUID
-    let originalText: String
-    let sourceLanguageCode: String // e.g., "en-US" (BCP-47)
-    let targetLanguageCode: String // e.g., "es-ES" (BCP-47)
-    let isFinal: Bool            // true if final transcript
-    let timestamp: TimeInterval
+  let id                : UUID
+  let text              : String        // raw transcript (no translation)
+  let source_language   : String        // BCP-47, e.g. "en-US"
+  let is_final          : Bool          // true when end-of-sentence
+  let timestamp         : TimeInterval  // wall-clock seconds
 }

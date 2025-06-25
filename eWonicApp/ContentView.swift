@@ -60,7 +60,7 @@ struct ContentView: View {
         .padding(.horizontal)
         .onDisappear {
           view_model.multipeerSession.disconnect()
-          view_model.sttService.stop()
+          view_model.sttService.stopTranscribing()
         }
 
         ErrorBanner(message: $view_model.errorMessage)
@@ -295,7 +295,7 @@ private struct PeerDiscoveryView: View {
 
       HStack(spacing: 20) {
         Button {
-          session.stopBrowsing()
+          session.stopActivities()
           session.startHosting()
         } label: {
           Label("Host", systemImage: "antenna.radiowaves.left.and.right")
@@ -306,7 +306,7 @@ private struct PeerDiscoveryView: View {
                     in: RoundedRectangle(cornerRadius: 10))
 
         Button {
-          session.stopHosting()
+          session.stopActivities()
           session.startBrowsing()
         } label: {
           Label("Join", systemImage: "magnifyingglass")

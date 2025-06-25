@@ -2,7 +2,10 @@
 //  TranslationViewModel.swift
 //  eWonicApp
 //
-//  2025-06-11 – speaks **only** incoming translations
+//  v2.0 – six-way multilingual lobby
+//  • broadcasts raw speech to everyone
+//  • each phone translates inbound text to *its* language
+//  • preserves all previous error / permission plumbing
 //
 
 import Foundation
@@ -15,7 +18,7 @@ final class TranslationViewModel: ObservableObject {
 
   // ─────────────────────────────── Services
   @Published var multipeerSession = MultipeerSession()
-  @Published var sttService       = AzureSpeechTranslationService()
+  @Published var sttService       = NativeSTTService()        // raw STT only
   @Published var ttsService       = AppleTTSService()
 
   // ─────────────────────────────── UI state
@@ -31,7 +34,7 @@ final class TranslationViewModel: ObservableObject {
 
   // ─────────────────────────────── Languages
   @Published var myLanguage   = "en-US" { didSet { refreshVoices() } }
-  @Published var peerLanguage = "es-ES" { didSet { refreshVoices() } }
+  @Published var peerLanguage = "es-ES" { didSet { refreshVoices() } } // kept for UI compatibility
 
   struct Language: Identifiable, Hashable {
     let id   = UUID()
@@ -71,16 +74,22 @@ final class TranslationViewModel: ObservableObject {
     checkAllPermissions()
     refreshVoices()
     wireConnectionBadge()
-    wirePipelines()
+    wireSTTPipelines()
     wireMicPauseDuringPlayback()
+
+    // Multipeer errors
     multipeerSession.errorSubject
       .receive(on: RunLoop.main)
       .sink { [weak self] msg in self?.errorMessage = msg }
       .store(in: &cancellables)
-    (sttService as! AzureSpeechTranslationService).errorSubject
+
+    // STT errors
+    sttService.errorSubject
       .receive(on: RunLoop.main)
-      .sink { [weak self] msg in self?.errorMessage = msg }
-      .store(in: &cancellables)
+      .sink { [weak self] err in self?.errorMessage = err.localizedDescription }
+      .store(in:&cancellables)
+
+    // Inbound messages
     multipeerSession.onMessageReceived = { [weak self] m in
       self?.handleReceivedMessage(m)
     }
@@ -93,7 +102,6 @@ final class TranslationViewModel: ObservableObject {
       hasAllPermissions       = ok
       permissionStatusMessage = ok ? "Permissions granted."
                                    : "Speech & Microphone permission denied."
-      if ok { sttService.setupSpeechRecognizer(languageCode: myLanguage) }
     }
   }
 
@@ -108,43 +116,38 @@ final class TranslationViewModel: ObservableObject {
     peerSaidText              = ""
     translatedTextForMeToHear = ""
 
-    (sttService as! AzureSpeechTranslationService)
-      .start(src: myLanguage, dst: peerLanguage)
+    sttService.startTranscribing(languageCode: myLanguage)
   }
 
   func stopListening() {
-    (sttService as! AzureSpeechTranslationService).stop()
+    sttService.stopTranscribing()
     isProcessing = false
   }
 
   // ─────────────────────────────── Combine pipelines
-  private func wirePipelines() {
+  private func wireSTTPipelines() {
 
-    // Live partials (UI only)
-    (sttService as! AzureSpeechTranslationService)
-      .partialResult
+    // Live partials → UI only
+    sttService.partialResultSubject
       .receive(on: RunLoop.main)
       .removeDuplicates()
       .throttle(for: .milliseconds(600), scheduler: RunLoop.main, latest: true)
       .assign(to: &$translatedTextForMeToHear)
 
-    // FINAL translation – send to peer (NO local TTS)
-    (sttService as! AzureSpeechTranslationService)
-      .finalResult
+    // FINAL raw sentence – broadcast to lobby
+    sttService.finalResultSubject
       .receive(on: RunLoop.main)
-      .sink { [weak self] tx in
+      .sink { [weak self] raw in
         guard let self else { return }
         isProcessing              = false
-        translatedTextForMeToHear = tx
-        sendTextToPeer(tx)
+        translatedTextForMeToHear = ""            // clear live overlay
+
+        // UI mirror of what *I* just said
+        myTranscribedText = raw
+
+        sendRawToPeers(raw)
       }
       .store(in:&cancellables)
-
-    // Raw sentence I spoke → UI
-    (sttService as! AzureSpeechTranslationService)
-      .sourceFinalResult
-      .receive(on: RunLoop.main)
-      .assign(to: &$myTranscribedText)
   }
 
   private func wireConnectionBadge() {
@@ -152,11 +155,11 @@ final class TranslationViewModel: ObservableObject {
       .receive(on: RunLoop.main)
       .map { [weak self] state -> String in
         guard let self else { return "Not Connected" }
-        let peer = multipeerSession.connectedPeers.first?.displayName ?? "peer"
+        let count = multipeerSession.connectedPeers.count
         switch state {
         case .notConnected: return "Not Connected"
         case .connecting:   return "Connecting…"
-        case .connected:    return "Connected to \(peer)"
+        case .connected:    return "Connected (\(count))"
         @unknown default:   return "Unknown"
         }
       }
@@ -170,80 +173,72 @@ final class TranslationViewModel: ObservableObject {
       .removeDuplicates()
       .sink { [weak self] speaking in
         guard let self else { return }
-        if speaking {
-          wasListeningPrePlayback = sttService.isListening
-          if wasListeningPrePlayback {
-            (sttService as! AzureSpeechTranslationService).stop()
-          }
-        } else {
-          if wasListeningPrePlayback {
-            (sttService as! AzureSpeechTranslationService)
-              .start(src: myLanguage, dst: peerLanguage)
-            wasListeningPrePlayback = false
-          }
-          isProcessing = false
-        }
+      if speaking {
+              sttService.pause()
+            } else {
+              sttService.resume()
+            }
       }
       .store(in:&cancellables)
   }
 
   // ─────────────────────────────── Messaging
-  private func sendTextToPeer(_ translated: String) {
-    guard !translated.isEmpty else { return }
-    let msg = MessageData(id: UUID(),
-                          originalText:       translated,
-                          sourceLanguageCode: peerLanguage,
-                          targetLanguageCode: peerLanguage,
-                          isFinal:            true,
-                          timestamp:          Date().timeIntervalSince1970)
-    multipeerSession.send(message: msg, reliable: true)
+  private func sendRawToPeers(_ raw: String) {
+    guard !raw.isEmpty else { return }
+    let pkt = MessageData(
+      id: UUID(),
+      text: raw,
+      source_language: myLanguage,
+      is_final: true,
+      timestamp: Date().timeIntervalSince1970
+    )
+      multipeerSession.send(message: pkt, reliable: true)
   }
 
   private func handleReceivedMessage(_ m: MessageData) {
     guard m.timestamp > lastReceivedTimestamp else { return }
     lastReceivedTimestamp = m.timestamp
 
-    peerSaidText              = "Peer: \(m.originalText)"
-    translatedTextForMeToHear = m.originalText
-    isProcessing              = true
+    // Show raw for debugging
+    peerSaidText = "Peer: \(m.text)"
+    isProcessing = true
 
-    let chosen = voice_for_lang[m.sourceLanguageCode]   // may be nil
-    ttsService.speak(text: m.originalText,
-                     languageCode: m.sourceLanguageCode,
-                     voiceIdentifier: chosen)
+    Task { [mLang = myLanguage] in
+      let translated = try? await UnifiedTranslateService.translate(
+        m.text, from: m.source_language, to: mLang)
+      await MainActor.run {
+        translatedTextForMeToHear = translated ?? m.text
+        let chosen = voice_for_lang[mLang]          // may be nil
+        ttsService.speak(text: translated ?? m.text,
+                         languageCode: mLang,
+                         voiceIdentifier: chosen)
+      }
+    }
   }
 
   // ─────────────────────────────── Voice helpers
-    private func refreshVoices() {
-      let langs = Set([myLanguage, peerLanguage])          // BCP-47 codes
+  private func refreshVoices() {
+    let langs = Set([myLanguage, peerLanguage])          // BCP-47 codes
 
-      DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-        guard let self else { return }
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      guard let self else { return }
 
-        // 1️⃣ pull the raw list
-        let rawVoices = AVSpeechSynthesisVoice.speechVoices()
-
-        // 2️⃣ keep only the two active languages
-        let filtered  = rawVoices.filter { langs.contains($0.language) }
-
-        // 3️⃣ convert to our light-weight model
-        let converted = filtered.map {
-          Voice(language: $0.language,
-                name:      $0.name,
-                identifier:$0.identifier)
-        }
-
-        // 4️⃣ stable sort: language → name
-        let sorted    = converted.sorted {
-          $0.language == $1.language ? $0.name < $1.name
-                                     : $0.language < $1.language
-        }
-
-        // 5️⃣ publish on the main thread
-        DispatchQueue.main.async { self.availableVoices = sorted }
+      let filtered = AVSpeechSynthesisVoice.speechVoices().filter {
+        langs.contains($0.language)
       }
-    }
 
+      let converted = filtered.map {
+        Voice(language: $0.language,
+              name: $0.name,
+              identifier: $0.identifier)
+      }
+      let sorted = converted.sorted {
+        $0.language == $1.language ? $0.name < $1.name
+                                   : $0.language < $1.language
+      }
+      DispatchQueue.main.async { self.availableVoices = sorted }
+    }
+  }
 
   // ─────────────────────────────── Utilities
   func resetConversationHistory() {

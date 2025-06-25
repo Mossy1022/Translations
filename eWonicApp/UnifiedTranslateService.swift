@@ -2,20 +2,19 @@
 //  UnifiedTranslateService.swift
 //  eWonicApp
 //
-//  Single source of truth for sentence-level translation.
-//  **Azure-only – no fallbacks.**
+//  Azure-only façade.
+//  Swaps easily if you ever change providers, but right now it is a
+//  one-liner that routes everything through AzureTextTranslator.
 //
 
-//import Foundation
-//
-//struct UnifiedTranslateService {
-//
-//  /// Translate *text* from **src** → **dst** via Azure Text Translator
-//  static func translate(_ text: String,
-//                        from src: String,
-//                        to   dst: String) async throws -> String {
-//    return try await AzureTextTranslator.translate(text,
-//                                                   from: src,
-//                                                   to:   dst)
-//  }
-//}
+import Foundation
+
+enum UnifiedTranslateService {
+
+  /// Translate *text* from **src** → **dst** using Azure.
+  static func translate(_ text: String,
+                        from src: String,
+                        to   dst: String) async throws -> String {
+    try await AzureTextTranslator.translate(text, from: src, to: dst)
+  }
+}
