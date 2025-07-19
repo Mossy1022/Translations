@@ -70,6 +70,21 @@ final class AppleTTSService: NSObject, ObservableObject {
     utt.rate              =  speech_rate
     utt.preUtteranceDelay  = 0
     utt.postUtteranceDelay = 0
+      
+      if let id = voiceIdentifier, let v = AVSpeechSynthesisVoice(identifier: id) {
+        print("[TTS] override voice: \(v.name)")
+        utt.voice = v
+
+      } else if let id = preferred_voices[languageCode],
+                let v  = AVSpeechSynthesisVoice(identifier: id) {
+        print("[TTS] preferred voice: \(v.name)")
+        utt.voice = v
+
+      } else {
+        let v = bestVoice(for: languageCode)
+        print("[TTS] fallback voice: \(v?.name ?? "<none>")")
+        utt.voice = v
+      }
 
     synthesizer.speak(utt)
     isSpeaking = true
@@ -87,15 +102,22 @@ final class AppleTTSService: NSObject, ObservableObject {
 
   private func bestVoice(for languageCode: String) -> AVSpeechSynthesisVoice? {
     if #available(iOS 17.0, *) {
+        print(AVSpeechSynthesisVoice.speechVoices())
       if let v = AVSpeechSynthesisVoice.speechVoices()
         .first(where: { $0.language == languageCode && $0.quality == .premium }) {
+          print("my voice", v)
+
         return v
       }
     }
     if let v = AVSpeechSynthesisVoice.speechVoices()
       .first(where: { $0.language == languageCode && $0.quality == .enhanced }) {
+        print("my voice2", v)
+
       return v
     }
+    
+      print(languageCode)
     return AVSpeechSynthesisVoice(language: languageCode)
   }
 

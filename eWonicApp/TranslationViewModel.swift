@@ -73,6 +73,18 @@ final class TranslationViewModel: ObservableObject {
     wireConnectionBadge()
     wirePipelines()
     wireMicPauseDuringPlayback()
+      
+      // Whenever the user changes voice_for_lang, push it into AppleTTSService
+      $voice_for_lang
+        .receive(on: RunLoop.main)
+        .sink { [weak self] mapping in
+          guard let self = self else { return }
+          for (lang, id) in mapping {
+            self.ttsService.setPreferredVoice(identifier: id, for: lang)
+          }
+        }
+        .store(in: &cancellables)
+      
     multipeerSession.errorSubject
       .receive(on: RunLoop.main)
       .sink { [weak self] msg in self?.errorMessage = msg }
@@ -212,9 +224,10 @@ final class TranslationViewModel: ObservableObject {
     isProcessing              = true
 
     let chosen = voice_for_lang[m.sourceLanguageCode]   // may be nil
-    ttsService.speak(text: m.originalText,
-                     languageCode: m.sourceLanguageCode,
-                     voiceIdentifier: chosen)
+      ttsService.speak(
+        text: m.originalText,
+        languageCode: m.sourceLanguageCode
+      )
   }
 
   // ─────────────────────────────── Voice helpers
