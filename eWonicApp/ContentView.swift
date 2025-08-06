@@ -40,6 +40,10 @@ struct ContentView: View {
             Conversation_scroll(my_text:  view_model.myTranscribedText,
                                 peer_text: view_model.peerSaidText,
                                 translated: view_model.translatedTextForMeToHear)
+
+            Settings_sliders(mic: $view_model.micSensitivity,
+                               speed: $view_model.playbackSpeed)
+
               
               if view_model.sttService.isListening {
                   SensitivitySlider(value: $view_model.micSensitivity)
@@ -271,6 +275,29 @@ private struct SensitivitySlider: View {
         .padding(.vertical, 5)
         .accentColor(EwonicTheme.accent)
     }
+}
+
+private struct Settings_sliders: View {
+  @Binding var mic: Double
+  @Binding var speed: Double
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading) {
+        Text("Mic Sensitivity")
+          .font(.caption)
+          .foregroundColor(.white.opacity(0.7))
+        Slider(value: $mic, in: 0...1)
+          .tint(EwonicTheme.accent)
+      }
+      VStack(alignment: .leading) {
+        Text("Playback Speed")
+          .font(.caption)
+          .foregroundColor(.white.opacity(0.7))
+        Slider(value: $speed, in: 0...1)
+          .tint(EwonicTheme.accent)
+      }
+    }
+  }
 }
 
 private struct Record_button: View {

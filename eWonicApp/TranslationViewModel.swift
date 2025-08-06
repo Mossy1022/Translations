@@ -63,6 +63,14 @@ final class TranslationViewModel: ObservableObject {
   /// languageCode → chosen voice identifier
   @Published var voice_for_lang: [String:String] = [:]
 
+  // ─────────────────────────────── Settings
+  @Published var micSensitivity: Double = 0.5 {
+    didSet { AudioSessionManager.shared.setInputGain(Float(micSensitivity)) }
+  }
+  @Published var playbackSpeed: Double = 0.55 {
+    didSet { ttsService.speech_rate = Float(playbackSpeed) }
+  }
+
   // ─────────────────────────────── Internals
   private var cancellables            = Set<AnyCancellable>()
   private var lastReceivedTimestamp   : TimeInterval = 0
@@ -75,7 +83,9 @@ final class TranslationViewModel: ObservableObject {
     wireConnectionBadge()
     wirePipelines()
     wireMicPauseDuringPlayback()
-      
+    AudioSessionManager.shared.setInputGain(Float(micSensitivity))
+    ttsService.speech_rate = Float(playbackSpeed)
+
       // Whenever the user changes voice_for_lang, push it into AppleTTSService
       $voice_for_lang
         .receive(on: RunLoop.main)
