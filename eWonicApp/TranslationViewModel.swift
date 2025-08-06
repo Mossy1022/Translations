@@ -47,6 +47,8 @@ final class TranslationViewModel: ObservableObject {
     .init(name:"Japanese (Japan)",    code:"ja-JP"),
     .init(name:"Chinese (Simplified)",code:"zh-CN")
   ]
+    
+    @Published var micSensitivity: Float = 0.6   // 0...1, higher = more sensitive
 
   // ─────────────────────────────── Voices
   struct Voice: Identifiable, Hashable {
@@ -100,6 +102,13 @@ final class TranslationViewModel: ObservableObject {
     multipeerSession.onMessageReceived = { [weak self] m in
       self?.handleReceivedMessage(m)
     }
+      
+      $micSensitivity
+          .receive(on: RunLoop.main)
+          .sink { [weak self] s in
+              (self?.sttService as? NativeSTTService)?.sensitivity = s
+          }
+          .store(in: &cancellables)
   }
 
   // ─────────────────────────────── Permissions

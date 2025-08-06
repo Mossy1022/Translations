@@ -9,6 +9,18 @@ import Foundation
 import AVFoundation
 import Speech
 import Combine
+import Accelerate
+
+extension AVAudioPCMBuffer {
+    /// Simple RMS (energy) of the buffer for thresholding
+    var rmsEnergy: Float {
+        guard let channelData = floatChannelData?[0] else { return 0 }
+        let n = Int(frameLength)
+        var mean: Float = 0
+        vDSP_meamgv(channelData, 1, &mean, vDSP_Length(n))
+        return sqrt(mean)
+    }
+}
 
 // ───────────── Global STTError (unchanged) ─────────────
 enum STTError: Error, LocalizedError {
@@ -57,6 +69,8 @@ final class NativeSTTService: NSObject, ObservableObject {
   @Published private(set) var isListening = false
   @Published var recognizedText = ""
 
+    @Published var sensitivity: Float = 0.6     // default; set by ViewModel
+    
   // MARK: – Subjects (same names!)
   let partialResultSubject = PassthroughSubject<String,Never>()
   let finalResultSubject   = PassthroughSubject<String,Never>()
@@ -82,6 +96,8 @@ final class NativeSTTService: NSObject, ObservableObject {
             .sink { [cont] text in
                 cont.yield(text)        // <-- live push
             }
+        
+        
     }
 
   // ───────────── Permissions (unchanged) ─────────────
@@ -138,22 +154,29 @@ final class NativeSTTService: NSObject, ObservableObject {
       let node = audioEngine.inputNode
       let fmt  = node.outputFormat(forBus: 0)
       node.removeTap(onBus: 0)
-      node.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [self] buf, when in
-          guard !ignoreBuffers else { return }
-        // --- Do the silence test *before* appending the buffer
-        if lastBufferHostTime != 0 {
-          let now  = AVAudioTime.seconds(forHostTime: when.hostTime)
-          let prev = AVAudioTime.seconds(forHostTime: lastBufferHostTime)
-          if now - prev >= silenceTimeout {
-            recognitionRequest?.endAudio()
-            ignoreBuffers = true
-            return                // ◀︎ DON’T push this (or any more) audio
-          }
+        node.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [self] buf, when in
+        guard !ignoreBuffers else { return }
+        
+        // Below: Compute RMS energy
+        let energy = buf.rmsEnergy
+        if energy < (0.02 + (1.0 - sensitivity) * 0.40) {
+            // Below threshold = too quiet, skip! (tunable mapping)
+            return
         }
 
-        recognitionRequest?.append(buf)   // normal path
+        // ...existing silence test...
+        if lastBufferHostTime != 0 {
+            let now  = AVAudioTime.seconds(forHostTime: when.hostTime)
+            let prev = AVAudioTime.seconds(forHostTime: lastBufferHostTime)
+            if now - prev >= silenceTimeout {
+                recognitionRequest?.endAudio()
+                ignoreBuffers = true
+                return
+            }
+        }
+        recognitionRequest?.append(buf)
         lastBufferHostTime = when.hostTime
-      }
+    }
 
       do { audioEngine.prepare(); try audioEngine.start() }
       catch {

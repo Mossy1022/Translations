@@ -40,6 +40,10 @@ struct ContentView: View {
             Conversation_scroll(my_text:  view_model.myTranscribedText,
                                 peer_text: view_model.peerSaidText,
                                 translated: view_model.translatedTextForMeToHear)
+              
+              if view_model.sttService.isListening {
+                  SensitivitySlider(value: $view_model.micSensitivity)
+              }
 
             Record_button(is_listening:  view_model.sttService.isListening,
                           is_processing: view_model.isProcessing,
@@ -253,6 +257,20 @@ private struct Bubble: View {
         .foregroundColor(.white)
     }
   }
+}
+
+private struct SensitivitySlider: View {
+    @Binding var value: Float
+    var body: some View {
+        HStack {
+            Image(systemName: "mic.fill")
+            Slider(value: $value, in: 0.05...1.0, step: 0.01)
+            Text(String(format: "%.0f%%", value*100))
+                .frame(width: 50, alignment: .trailing)
+        }
+        .padding(.vertical, 5)
+        .accentColor(EwonicTheme.accent)
+    }
 }
 
 private struct Record_button: View {
