@@ -41,6 +41,9 @@ struct ContentView: View {
                                 peer_text: view_model.peerSaidText,
                                 translated: view_model.translatedTextForMeToHear)
 
+            Settings_sliders(mic: $view_model.micSensitivity,
+                               speed: $view_model.playbackSpeed)
+
             Record_button(is_listening:  view_model.sttService.isListening,
                           is_processing: view_model.isProcessing,
                           start_action:  view_model.startListening,
@@ -251,6 +254,29 @@ private struct Bubble: View {
         .frame(maxWidth: .infinity,
                alignment: align == .leading ? .leading : .trailing)
         .foregroundColor(.white)
+    }
+  }
+}
+
+private struct Settings_sliders: View {
+  @Binding var mic: Double
+  @Binding var speed: Double
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading) {
+        Text("Mic Sensitivity")
+          .font(.caption)
+          .foregroundColor(.white.opacity(0.7))
+        Slider(value: $mic, in: 0...1)
+          .tint(EwonicTheme.accent)
+      }
+      VStack(alignment: .leading) {
+        Text("Playback Speed")
+          .font(.caption)
+          .foregroundColor(.white.opacity(0.7))
+        Slider(value: $speed, in: 0...1)
+          .tint(EwonicTheme.accent)
+      }
     }
   }
 }
