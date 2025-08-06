@@ -66,4 +66,17 @@ final class AudioSessionManager {
             }
         }
     }
+
+    /// Adjust microphone sensitivity (0.0 – 1.0).
+    func setInputGain(_ value: Float) {
+        let clamped = max(0, min(1, value))
+        guard session.isInputGainSettable else { return }
+        do {
+            try session.setInputGain(clamped)
+        } catch {
+            let msg = "Mic gain failed: \(error.localizedDescription)"
+            print("❌ \(msg)")
+            errorSubject.send(msg)
+        }
+    }
 }
