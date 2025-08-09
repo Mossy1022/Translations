@@ -48,7 +48,6 @@ final class TranslationViewModel: ObservableObject {
     .init(name:"Chinese (Simplified)",code:"zh-CN")
   ]
     
-    @Published var micSensitivity: Float = 0.6   // 0...1, higher = more sensitive
 
   // ─────────────────────────────── Voices
   struct Voice: Identifiable, Hashable {
@@ -116,7 +115,7 @@ final class TranslationViewModel: ObservableObject {
       $micSensitivity
           .receive(on: RunLoop.main)
           .sink { [weak self] s in
-              (self?.sttService as? NativeSTTService)?.sensitivity = s
+              (self?.sttService as? NativeSTTService)?.sensitivity = Float(s)
           }
           .store(in: &cancellables)
   }

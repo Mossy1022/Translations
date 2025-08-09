@@ -45,9 +45,6 @@ struct ContentView: View {
                                speed: $view_model.playbackSpeed)
 
               
-              if view_model.sttService.isListening {
-                  SensitivitySlider(value: $view_model.micSensitivity)
-              }
 
             Record_button(is_listening:  view_model.sttService.isListening,
                           is_processing: view_model.isProcessing,

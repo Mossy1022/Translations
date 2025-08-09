@@ -59,10 +59,15 @@ final class AudioSessionManager {
         if ref_count == 0 {
             do {
                 try session.setActive(false, options: [.notifyOthersOnDeactivation])
-            } catch {
-                let msg = "Audio session deactivate failed: \(error.localizedDescription)"
-                print("❌ \(msg)")
-                errorSubject.send(msg)
+            }  catch let err as NSError {
+                if let code = AVAudioSession.ErrorCode(rawValue: err.code), code == .isBusy {
+                    // benign – mic or speaker still shutting down
+                    print("⚠️ Audio session still active; skipping deactivate")
+                } else {
+                    let msg = "Audio session deactivate failed: \(err.localizedDescription)"
+                    print("❌ \(msg)")
+                    errorSubject.send(msg)
+                }
             }
         }
     }
