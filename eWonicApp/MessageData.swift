@@ -2,16 +2,26 @@
 //  MessageData.swift
 //  eWonicMVP
 //
-//  Created by Evan Moscoso on 5/18/25.
+//  Wire-level transcript frame sent over Multipeer.
 //
 
 import Foundation
 
+enum BoundaryReason: String, Codable {
+  case punctuation   // strong boundary . ! ? ; : …
+  case silence       // long pause
+  case timeout       // hit max-segment wall
+  case stable        // text stopped changing for a moment
+  case asrFinal      // recognizer finalized without terminal punctuation
+}
+
 struct MessageData: Codable {
-    let id: UUID
-    let originalText: String
-    let sourceLanguageCode: String // e.g., "en-US" (BCP-47)
-    let targetLanguageCode: String // e.g., "es-ES" (BCP-47)
-    let isFinal: Bool            // true if final transcript
-    let timestamp: TimeInterval
+  let id: UUID
+  let originalText: String
+  let sourceLanguageCode: String
+  let isFinal: Bool
+  let timestamp: TimeInterval
+  let turnId: UUID
+  let segmentIndex: Int
+  let boundaryReason: BoundaryReason
 }
