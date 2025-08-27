@@ -73,6 +73,9 @@ final class TranslationViewModel: ObservableObject {
   private var cancellables            = Set<AnyCancellable>()
   private var lastReceivedTimestamp   : TimeInterval = 0
   private var wasListeningPrePlayback = false
+  private var partialBuffer           = ""
+  private var lastSentPartial        = ""
+  private var partialTimer: Timer?
 
   // ─────────────────────────────── Init
   init() {
@@ -153,16 +156,18 @@ final class TranslationViewModel: ObservableObject {
   // ─────────────────────────────── Combine pipelines
   private func wirePipelines() {
 
-    // Live partials (UI only)
+    // Stream raw partial results so we can chunk long sentences
+    (sttService as! AzureSpeechTranslationService)
+      .sourcePartialResult
+      .receive(on: RunLoop.main)
+      .sink { [weak self] raw in self?.handlePartial(raw) }
+      .store(in:&cancellables)
+
+    // Final sentence – flush any remaining buffer
     (sttService as! AzureSpeechTranslationService)
       .sourceFinalResult
       .receive(on: RunLoop.main)
-      .sink { [weak self] raw in
-        guard let self else { return }
-        self.myTranscribedText = raw
-        self.sendTextToPeers(raw)
-        self.isProcessing = false
-      }
+      .sink { [weak self] raw in self?.handleFinal(raw) }
       .store(in:&cancellables)
   }
 
@@ -200,23 +205,58 @@ final class TranslationViewModel: ObservableObject {
       .store(in:&cancellables)
   }
 
+  // ─────────────────────────────── Partial buffering
+  private func handlePartial(_ raw: String) {
+    myTranscribedText = raw
+    partialBuffer = raw
+    partialTimer?.invalidate()
+    partialTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { [weak self] _ in
+      self?.flushPartial(isFinal: false)
+    }
+  }
+
+  private func handleFinal(_ raw: String) {
+    myTranscribedText = raw
+    partialBuffer = raw
+    flushPartial(isFinal: true)
+    isProcessing = false
+  }
+
+  private func flushPartial(isFinal: Bool) {
+    partialTimer?.invalidate(); partialTimer = nil
+    guard partialBuffer.count > lastSentPartial.count else { return }
+    let start = partialBuffer.index(partialBuffer.startIndex, offsetBy: lastSentPartial.count)
+    let diff  = String(partialBuffer[start...]).trimmingCharacters(in:.whitespacesAndNewlines)
+    guard !diff.isEmpty else { return }
+    lastSentPartial = partialBuffer
+    sendTextToPeers(diff, final: isFinal)
+    if isFinal {
+      lastSentPartial = ""
+      partialBuffer   = ""
+    }
+  }
+
   // ─────────────────────────────── Messaging
-  private func sendTextToPeers(_ raw: String) {
+  private func sendTextToPeers(_ raw: String, final: Bool) {
     guard !raw.isEmpty else { return }
     let msg = MessageData(id: UUID(),
                           senderID:         multipeerSession.localPeerID.displayName,
                           originalText:     raw,
                           sourceLanguageCode: myLanguage,
-                          isFinal:          true,
+                          isFinal:          final,
                           timestamp:        Date().timeIntervalSince1970)
-    multipeerSession.send(message: msg, reliable: true)
+    multipeerSession.send(message: msg, reliable: final)
   }
 
   private func handleReceivedMessage(_ m: MessageData) {
     guard m.timestamp > lastReceivedTimestamp else { return }
     lastReceivedTimestamp = m.timestamp
 
-    peerSaidText = "\(m.senderID): \(m.originalText)"
+    if peerSaidText.starts(with: "\(m.senderID): ") {
+      peerSaidText += m.originalText
+    } else {
+      peerSaidText = "\(m.senderID): \(m.originalText)"
+    }
     isProcessing = true
 
     Task {
@@ -224,7 +264,7 @@ final class TranslationViewModel: ObservableObject {
                                                                      from: m.sourceLanguageCode,
                                                                      to: myLanguage)) ?? m.originalText
       await MainActor.run {
-        translatedTextForMeToHear = translated
+        translatedTextForMeToHear += translated
         ttsService.speak(text: translated, languageCode: myLanguage)
         isProcessing = false
       }
