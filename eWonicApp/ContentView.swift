@@ -27,12 +27,11 @@ struct ContentView: View {
               view_model.checkAllPermissions()
             }
 
-          } else if view_model.multipeerSession.connectionState == .connected {
+          } else if !view_model.multipeerSession.connectedPeers.isEmpty {
 
-            Language_bar(my_lang:   $view_model.myLanguage,
-                         peer_lang: $view_model.peerLanguage,
-                         list:      view_model.availableLanguages,
-                         disabled:  view_model.isProcessing || view_model.sttService.isListening)
+            Language_bar(my_lang: $view_model.myLanguage,
+                         list:    view_model.availableLanguages,
+                         disabled: view_model.isProcessing || view_model.sttService.isListening)
 
               Voice_bar(voice_for_lang: $view_model.voice_for_lang,
                         voices:        view_model.availableVoices)
@@ -129,18 +128,12 @@ private struct Permission_card: View {
 
 private struct Language_bar: View {
   @Binding var my_lang: String
-  @Binding var peer_lang: String
   let list: [TranslationViewModel.Language]
   let disabled: Bool
   var body: some View {
-    HStack(spacing: 12) {
-      Lang_menu(label: "I Speak", code: $my_lang, list: list)
-      Image(systemName: "arrow.left.arrow.right")
-        .foregroundColor(.white.opacity(disabled ? 0.35 : 1))
-      Lang_menu(label: "Peer Hears", code: $peer_lang, list: list)
-    }
-    .disabled(disabled)
-    .opacity(disabled ? 0.55 : 1)
+    Lang_menu(label: "I Speak", code: $my_lang, list: list)
+      .disabled(disabled)
+      .opacity(disabled ? 0.55 : 1)
   }
 }
 

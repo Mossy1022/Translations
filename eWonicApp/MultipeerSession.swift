@@ -23,6 +23,8 @@ final class MultipeerSession: NSObject, ObservableObject {
   // ────────────────────────────── MC plumbing
   private let myPeerID = MCPeerID(displayName: UIDevice.current.name)
 
+  var localPeerID: MCPeerID { myPeerID }
+
   private lazy var session: MCSession = {
     let s = MCSession(
       peer:               myPeerID,
@@ -165,7 +167,7 @@ extension MultipeerSession: MCSessionDelegate {
     case .notConnected:
       DispatchQueue.main.async {
         self.connectedPeers.removeAll { $0 == id }
-        self.connectionState = .notConnected
+        self.connectionState = self.connectedPeers.isEmpty ? .notConnected : .connected
       }
       log.debug("[Multipeer] \(id.displayName) DISCONNECTED")
       errorSubject.send("Peer \(id.displayName) disconnected")
