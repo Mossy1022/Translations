@@ -23,7 +23,7 @@ final class TranslationViewModel: ObservableObject {
   @Published var mode: Mode = .peer
 
   // ─────────────────────────────── Services
-  @Published var multipeerSession = MultipeerSession()
+  @Published var multipeerSession: MultipeerSession
   @Published var sttService       = AzureSpeechTranslationService()   // Peer mode (mic → translation to peer)
   @Published var autoService      = AzureAutoConversationService()    // One‑Phone auto‑detect
   @Published var ttsService       = AppleTTSService()
@@ -41,7 +41,7 @@ final class TranslationViewModel: ObservableObject {
 
   // ─────────────────────────────── Languages
   /// On Peer screen: me → peer. On One‑Phone screen: left tile ↔ right tile.
-  @Published var myLanguage   = "en-US"  { didSet { refreshVoices() } }
+  @Published var myLanguage   = "en-US"  { didSet { refreshVoices(); multipeerSession.updateLocalLanguage(myLanguage) } }
   @Published var peerLanguage = "es-US"  { didSet { refreshVoices() } } // Spanish (Latin America)
 
   struct Language: Identifiable, Hashable {
@@ -217,6 +217,7 @@ final class TranslationViewModel: ObservableObject {
 
   // ─────────────────────────────── Init
   init() {
+    multipeerSession = MultipeerSession(localLanguage: myLanguage)
     checkAllPermissions()
     refreshVoices()
     wireConnectionBadge()
@@ -603,8 +604,8 @@ final class TranslationViewModel: ObservableObject {
       let msg = MessageData(
         id: UUID(),
         originalText:       text,
-        sourceLanguageCode: peerLanguage,   // what the peer should hear
-        targetLanguageCode: peerLanguage,
+        sourceLanguageCode: myLanguage,   // language I'm speaking
+        targetLanguageCode: nil,
         isFinal:            isFinal,
         timestamp:          Date().timeIntervalSince1970
       )
@@ -615,16 +616,30 @@ final class TranslationViewModel: ObservableObject {
       guard m.timestamp > lastReceivedTimestamp else { return }
       lastReceivedTimestamp = m.timestamp
 
-      if m.isFinal {
-        peerSaidText = "Peer: \(m.originalText)"
-      } else {
-        translatedTextForMeToHear = m.originalText
+      Task {
+        do {
+          let tx = try await AzureTextTranslator.translate(
+            m.originalText,
+            from: m.sourceLanguageCode,
+            to:   myLanguage)
+          await MainActor.run {
+            if m.isFinal {
+              peerSaidText = "Peer: \(tx)"
+            } else {
+              translatedTextForMeToHear = tx
+            }
+            isProcessing = true
+            ttsService.speak(text: tx,
+                             languageCode: myLanguage,
+                             voiceIdentifier: voice_for_lang[myLanguage])
+          }
+        } catch {
+          await MainActor.run {
+            errorMessage = "Text translation failed."
+            isProcessing = false
+          }
+        }
       }
-      isProcessing = true
-
-      ttsService.speak(text: m.originalText,
-                       languageCode: m.sourceLanguageCode,
-                       voiceIdentifier: voice_for_lang[m.sourceLanguageCode])
     }
 
 
