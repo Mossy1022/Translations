@@ -45,6 +45,7 @@ struct ContentView: View {
                       voices:        view_model.availableVoices)
 
             Conversation_scroll(my_text:  view_model.myTranscribedText,
+                                peer_label: "Peer",
                                 peer_text: view_model.peerSaidText,
                                 translated: view_model.translatedTextForMeToHear)
 
@@ -61,6 +62,8 @@ struct ContentView: View {
               .foregroundColor(.white.opacity(0.7))
               .padding(.top, 4)
 
+          } else if view_model.mode == .convention {
+            ConventionScreen(vm: view_model)
           } else {
             // ───── One‑Phone Conversation ─────
             OnePhoneConversationScreen(vm: view_model)
@@ -102,6 +105,7 @@ private struct ModePicker: View {
     Picker("Mode", selection: $mode) {
       Text("Peer").tag(TranslationViewModel.Mode.peer)
       Text("One Phone").tag(TranslationViewModel.Mode.onePhone)
+      Text("Convention").tag(TranslationViewModel.Mode.convention)
     }
     .pickerStyle(.segmented)
     .padding(.horizontal, 2)
@@ -112,7 +116,7 @@ private struct Connection_pill: View {
   let status: String
   let peer_count: Int
   private var colour: Color {
-    if status.contains("Connected") || status.contains("One Phone") { return EwonicTheme.pillConnected }
+    if status.contains("Connected") || status.contains("One Phone") || status.contains("Convention") { return EwonicTheme.pillConnected }
     if status.contains("Connecting") { return EwonicTheme.pillConnecting }
     return EwonicTheme.pillDisconnected
   }
@@ -158,6 +162,23 @@ private struct Language_bar: View {
       Image(systemName: "arrow.left.arrow.right")
         .foregroundColor(.white.opacity(disabled ? 0.35 : 1))
       Lang_menu(label: "Peer Hears", code: $peer_lang, list: list)
+    }
+    .disabled(disabled)
+    .opacity(disabled ? 0.55 : 1)
+  }
+}
+
+private struct Convention_language_bar: View {
+  @Binding var my_lang: String
+  @Binding var speaker_lang: String
+  let list: [TranslationViewModel.Language]
+  let disabled: Bool
+  var body: some View {
+    HStack(spacing: 12) {
+      Lang_menu(label: "Speaker", code: $speaker_lang, list: list)
+      Image(systemName: "arrow.left.arrow.right")
+        .foregroundColor(.white.opacity(disabled ? 0.35 : 1))
+      Lang_menu(label: "I Hear", code: $my_lang, list: list)
     }
     .disabled(disabled)
     .opacity(disabled ? 0.55 : 1)
@@ -239,14 +260,17 @@ private struct Voice_bar: View {
 
 private struct Conversation_scroll: View {
   let my_text: String
+  let peer_label: String
   let peer_text: String
   let translated: String
   var body: some View {
     ScrollView {
       VStack(spacing: 14) {
-        Bubble(label: "You",  text: my_text,
-               colour: EwonicTheme.bubbleSent, align: .leading)
-        Bubble(label: "Peer", text: peer_text,
+        if !my_text.isEmpty {
+          Bubble(label: "You",  text: my_text,
+                 colour: EwonicTheme.bubbleSent, align: .leading)
+        }
+        Bubble(label: peer_label, text: peer_text,
                colour: EwonicTheme.bubbleReceived, align: .trailing)
         Bubble(label: "Live", text: translated,
                colour: EwonicTheme.bubbleTranslated, align: .trailing, loud: true)
@@ -476,6 +500,38 @@ private struct ErrorBanner: View {
 }
 
 
+
+private struct ConventionScreen: View {
+  @ObservedObject var vm: TranslationViewModel
+
+  var body: some View {
+    Convention_language_bar(my_lang: $vm.myLanguage,
+                            speaker_lang: $vm.peerLanguage,
+                            list: vm.availableLanguages,
+                            disabled: vm.isProcessing || vm.sttService.isListening)
+
+    Voice_bar(voice_for_lang: $vm.voice_for_lang,
+              voices:        vm.availableVoices)
+
+    Conversation_scroll(my_text: "",
+                        peer_label: "Speaker",
+                        peer_text: vm.peerSaidText,
+                        translated: vm.translatedTextForMeToHear)
+
+    Settings_sliders(mic: $vm.micSensitivity,
+                     speed: $vm.playbackSpeed)
+
+    Record_button(is_listening:  vm.sttService.isListening,
+                  is_processing: vm.isProcessing,
+                  start_action:  vm.startListening,
+                  stop_action:   vm.stopListening)
+
+    Button("Clear History") { vm.resetConversationHistory() }
+      .font(.caption)
+      .foregroundColor(.white.opacity(0.7))
+      .padding(.top, 4)
+  }
+}
 
 // ────────────────────────── ONE‑PHONE SCREEN ──────────────────────────
 
