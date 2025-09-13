@@ -100,26 +100,37 @@ final class AppleTTSService: NSObject, ObservableObject {
   // MARK: – Private helpers
   // ─────────────────────────────────────────────
 
-  private func bestVoice(for languageCode: String) -> AVSpeechSynthesisVoice? {
-    if #available(iOS 17.0, *) {
-        print(AVSpeechSynthesisVoice.speechVoices())
-      if let v = AVSpeechSynthesisVoice.speechVoices()
-        .first(where: { $0.language == languageCode && $0.quality == .premium }) {
-          print("my voice", v)
+    private func bestVoice(for languageCode: String) -> AVSpeechSynthesisVoice? {
+      let base = String(languageCode.prefix(2))
 
+      if #available(iOS 17.0, *) {
+        // 1) Exact dialect, Premium
+        if let v = AVSpeechSynthesisVoice.speechVoices()
+          .first(where: { $0.language == languageCode && $0.quality == .premium }) {
+          return v
+        }
+        // 2) Any same-base dialect, Premium (e.g., any "es-*")
+        if let v = AVSpeechSynthesisVoice.speechVoices()
+          .first(where: { $0.language.hasPrefix(base + "-") && $0.quality == .premium }) {
+          return v
+        }
+      }
+
+      // 3) Exact dialect, Enhanced
+      if let v = AVSpeechSynthesisVoice.speechVoices()
+        .first(where: { $0.language == languageCode && $0.quality == .enhanced }) {
         return v
       }
-    }
-    if let v = AVSpeechSynthesisVoice.speechVoices()
-      .first(where: { $0.language == languageCode && $0.quality == .enhanced }) {
-        print("my voice2", v)
+      // 4) Any same-base dialect, Enhanced
+      if let v = AVSpeechSynthesisVoice.speechVoices()
+        .first(where: { $0.language.hasPrefix(base + "-") && $0.quality == .enhanced }) {
+        return v
+      }
 
-      return v
+      // 5) System default for the base language
+      return AVSpeechSynthesisVoice(language: base)
     }
-    
-      print(languageCode)
-    return AVSpeechSynthesisVoice(language: languageCode)
-  }
+
 
   private func clamp(_ x: Float, min: Float, max: Float) -> Float {
     Swift.min(Swift.max(x, min), max)

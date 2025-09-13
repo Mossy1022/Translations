@@ -142,25 +142,42 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
       }
     }
 
-    // Final sentence
-    recognizer!.addRecognizedEventHandler { [weak self] _, ev in
-      guard let self else { return }
+      // Final sentence
+      recognizer!.addRecognizedEventHandler { [weak self] _, ev in
+        guard let self else { return }
 
-      let translated = (ev.result.translations[self.dst_lang_2] as? String)?
-                         .trimmingCharacters(in:.whitespacesAndNewlines)
+        let translated = (ev.result.translations[self.dst_lang_2] as? String)?
+                           .trimmingCharacters(in: .whitespacesAndNewlines)
 
-      let raw = (ev.result.text ?? "")
-                  .trimmingCharacters(in:.whitespacesAndNewlines)
+        let raw = (ev.result.text ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
 
-      DispatchQueue.main.async {
-        if let tx = translated, !tx.isEmpty {
-          self.finalResult.send(tx)
-        } else if !raw.isEmpty {
-          self.finalResult.send(raw)          // fallback
+        // Still forward the raw final for “what I said”
+        if !raw.isEmpty {
+          DispatchQueue.main.async { self.sourceFinalResult.send(raw) }
         }
-        if !raw.isEmpty { self.sourceFinalResult.send(raw) }
+
+        // Prefer Text Translator for final quality (don’t touch partials)
+        Task { [weak self] in
+          guard let self else { return }
+
+          if !raw.isEmpty,
+             let better = try? await AzureTextTranslator.translate(
+               raw,
+               from: self.last_src_lang,
+               to:   self.last_dst_lang
+             ),
+             !better.isEmpty {
+            await MainActor.run { self.finalResult.send(better) }
+
+          } else if let tx = translated, !tx.isEmpty {
+            await MainActor.run { self.finalResult.send(tx) }
+
+          } else if !raw.isEmpty {
+            await MainActor.run { self.finalResult.send(raw) }
+          }
+        }
       }
-    }
 
     // Synth-audio passthrough now redundant (kept for future use)
     recognizer!.addSynthesizingEventHandler { [weak self] _, ev in
