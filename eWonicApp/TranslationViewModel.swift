@@ -18,6 +18,7 @@ final class TranslationViewModel: ObservableObject {
   enum Mode: String, CaseIterable {
     case peer     = "Peer"
     case onePhone = "One Phone"
+    case convention = "Convention"
   }
   @Published var mode: Mode = .peer
 
@@ -139,13 +140,13 @@ final class TranslationViewModel: ObservableObject {
     }
 
     private func fireEarlyTTSBailout() {
-      guard mode == .peer else { return }
+      guard mode == .peer || mode == .convention else { return }
       let s = lastPartialForTurn
       guard !s.isEmpty, s.count > earlyTTSSentPrefix + earlyTTSMinChunkChars else { return }
       if let cut = lastWordBoundary(in: s, fromOffset: earlyTTSSentPrefix) {
         let start = s.index(s.startIndex, offsetBy: earlyTTSSentPrefix)
         let chunk = String(s[start..<cut])
-        sendTextToPeer(chunk, isFinal: false, reliable: false)
+        emitChunk(chunk, isFinal: false)
         earlyTTSSentPrefix = s.distance(from: s.startIndex, to: cut)
       }
       // schedule next bailout window
@@ -162,7 +163,7 @@ final class TranslationViewModel: ObservableObject {
         let start = s.index(s.startIndex, offsetBy: earlyTTSSentPrefix)
         let chunk = String(s[start..<cut])
         if chunk.count >= earlyTTSMinChunkChars {
-          sendTextToPeer(chunk, isFinal: false, reliable: false)
+          emitChunk(chunk, isFinal: false)
           earlyTTSSentPrefix = s.distance(from: s.startIndex, to: cut)
           // Reset the 8s timer to wait for next clause
           startEarlyTTSBailTimer()
@@ -182,7 +183,7 @@ final class TranslationViewModel: ObservableObject {
 
       translatedTextForMeToHear = final
       if !tail.isEmpty {
-        sendTextToPeer(tail, isFinal: true, reliable: true)
+        emitChunk(tail, isFinal: true)
       }
       resetEarlyTTSState()
     }
@@ -269,7 +270,7 @@ final class TranslationViewModel: ObservableObject {
     }
   }
 
-  // ─────────────────────────────── Peer mic control
+  // ─────────────────────────────── Mic control
     func startListening() {
       guard hasAllPermissions else { myTranscribedText = "Missing permissions."; return }
       if mode == .peer {
@@ -277,11 +278,17 @@ final class TranslationViewModel: ObservableObject {
           myTranscribedText = "Not connected."; return
         }
         guard !sttService.isListening else { return }
-        resetEarlyTTSState()               // NEW
+        resetEarlyTTSState()
         isProcessing = true
         myTranscribedText = "Listening…"
         peerSaidText = ""; translatedTextForMeToHear = ""
         (sttService as! AzureSpeechTranslationService).start(src: myLanguage, dst: peerLanguage)
+      } else if mode == .convention {
+        guard !sttService.isListening else { return }
+        resetEarlyTTSState()
+        isProcessing = true
+        peerSaidText = ""; translatedTextForMeToHear = ""
+        (sttService as! AzureSpeechTranslationService).start(src: peerLanguage, dst: myLanguage)
       } else {
         startAuto()
       }
@@ -289,9 +296,9 @@ final class TranslationViewModel: ObservableObject {
 
 
     func stopListening() {
-      if mode == .peer {
+      if mode == .peer || mode == .convention {
         (sttService as! AzureSpeechTranslationService).stop()
-        resetEarlyTTSState()               // NEW
+        resetEarlyTTSState()
         isProcessing = false
       } else {
         stopAuto()
@@ -339,11 +346,19 @@ final class TranslationViewModel: ObservableObject {
         }
         .store(in: &cancellables)
 
-      // Raw source finals (what I said)
+      // Raw source finals (what was spoken)
       sttService
         .sourceFinalResult
         .receive(on: RunLoop.main)
-        .assign(to: &$myTranscribedText)
+        .sink { [weak self] txt in
+          guard let self else { return }
+          if mode == .peer {
+            myTranscribedText = txt
+          } else if mode == .convention {
+            peerSaidText = txt
+          }
+        }
+        .store(in: &cancellables)
     }
 
 
@@ -421,6 +436,7 @@ final class TranslationViewModel: ObservableObject {
       .map { [weak self] mode, state -> String in
         guard let self else { return "Not Connected" }
         if mode == .onePhone { return "One Phone" }
+        if mode == .convention { return "Convention" }
         let peer = multipeerSession.connectedPeers.first?.displayName ?? "peer"
         switch state {
         case .notConnected: return "Not Connected"
@@ -447,6 +463,8 @@ final class TranslationViewModel: ObservableObject {
           if wasListeningPrePlayback {
             if mode == .peer {
               (sttService as! AzureSpeechTranslationService).start(src: myLanguage, dst: peerLanguage)
+            } else if mode == .convention {
+              (sttService as! AzureSpeechTranslationService).start(src: peerLanguage, dst: myLanguage)
             } else {
               autoService.start(between: myLanguage, and: peerLanguage)
             }
@@ -568,7 +586,18 @@ final class TranslationViewModel: ObservableObject {
     }
   }
 
-  // ─────────────────────────────── Messaging (Peer mode only)
+  // ─────────────────────────────── Messaging / Emission
+    private func emitChunk(_ text: String, isFinal: Bool) {
+      guard !text.isEmpty else { return }
+      if mode == .peer {
+        sendTextToPeer(text, isFinal: isFinal, reliable: isFinal)
+      } else if mode == .convention {
+        ttsService.speak(text: text,
+                         languageCode: myLanguage,
+                         voiceIdentifier: voice_for_lang[myLanguage])
+      }
+    }
+
     private func sendTextToPeer(_ text: String, isFinal: Bool, reliable: Bool) {
       guard !text.isEmpty else { return }
       let msg = MessageData(
