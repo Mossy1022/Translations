@@ -15,6 +15,7 @@ final class MultipeerSession: NSObject, ObservableObject {
 
   @Published private(set) var connectedPeers  : [MCPeerID] = []
   @Published private(set) var discoveredPeers : [MCPeerID] = []
+  @Published private(set) var peerLanguages   : [MCPeerID:String] = [:]
   @Published private(set) var connectionState : MCSessionState = .notConnected
   @Published private(set) var isAdvertising   = false
   @Published private(set) var isBrowsing      = false
@@ -22,6 +23,7 @@ final class MultipeerSession: NSObject, ObservableObject {
 
   // ────────────────────────────── MC plumbing
   private let myPeerID = MCPeerID(displayName: UIDevice.current.name)
+  private var localLanguage: String
 
   private lazy var session: MCSession = {
     let s = MCSession(
@@ -33,23 +35,44 @@ final class MultipeerSession: NSObject, ObservableObject {
     return s
   }()
 
-  private lazy var advertiser = MCNearbyServiceAdvertiser(
-    peer: myPeerID, discoveryInfo: nil, serviceType: SERVICE_TYPE)
-
-  private lazy var browser = MCNearbyServiceBrowser(
-    peer: myPeerID, serviceType: SERVICE_TYPE)
+  private var advertiser: MCNearbyServiceAdvertiser
+  private var browser   : MCNearbyServiceBrowser
 
   // ────────────────────────────── Callback
   var onMessageReceived: ((MessageData) -> Void)?
   let errorSubject = PassthroughSubject<String,Never>()
 
   // ────────────────────────────── Life‑cycle
-  override init() {
+  init(localLanguage: String) {
+    self.localLanguage = localLanguage
+    self.advertiser = MCNearbyServiceAdvertiser(
+      peer: myPeerID,
+      discoveryInfo: ["lang": localLanguage],
+      serviceType: SERVICE_TYPE)
+    self.browser = MCNearbyServiceBrowser(
+      peer: myPeerID,
+      serviceType: SERVICE_TYPE)
     super.init()
     advertiser.delegate = self
     browser.delegate    = self
   }
   deinit { disconnect() }
+
+  /// Update the advertised discovery info with a new language code.
+  func updateLocalLanguage(_ lang: String) {
+    mpq.async { [self] in
+      guard lang != localLanguage else { return }
+      localLanguage = lang
+      let wasAdvertising = isAdvertising
+      advertiser.stopAdvertisingPeer()
+      advertiser = MCNearbyServiceAdvertiser(
+        peer: myPeerID,
+        discoveryInfo: ["lang": lang],
+        serviceType: SERVICE_TYPE)
+      advertiser.delegate = self
+      if wasAdvertising { advertiser.startAdvertisingPeer() }
+    }
+  }
 
   // ────────────────────────────── Host / Join
   func startHosting() {
@@ -165,6 +188,7 @@ extension MultipeerSession: MCSessionDelegate {
     case .notConnected:
       DispatchQueue.main.async {
         self.connectedPeers.removeAll { $0 == id }
+        self.peerLanguages.removeValue(forKey: id)
         self.connectionState = .notConnected
       }
       log.debug("[Multipeer] \(id.displayName) DISCONNECTED")
@@ -230,15 +254,19 @@ extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
 extension MultipeerSession: MCNearbyServiceBrowserDelegate {
   func browser(_: MCNearbyServiceBrowser,
                foundPeer id: MCPeerID,
-               withDiscoveryInfo _: [String:String]?) {
+               withDiscoveryInfo info: [String:String]?) {
     DispatchQueue.main.async {
       if !self.discoveredPeers.contains(id) { self.discoveredPeers.append(id) }
+      if let lang = info?["lang"] { self.peerLanguages[id] = lang }
     }
     log.debug("🟢 Found peer \(id.displayName)")
   }
 
   func browser(_: MCNearbyServiceBrowser, lostPeer id: MCPeerID) {
-    DispatchQueue.main.async { self.discoveredPeers.removeAll { $0 == id } }
+    DispatchQueue.main.async {
+      self.discoveredPeers.removeAll { $0 == id }
+      self.peerLanguages.removeValue(forKey: id)
+    }
     log.debug("🔴 Lost peer \(id.displayName)")
   }
 
