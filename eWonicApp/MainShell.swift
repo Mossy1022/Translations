@@ -10,6 +10,15 @@ import SwiftUI
 @MainActor
 struct MainShell: View {
   var body: some View {
-    ContentView()
+    TabView {
+      ContentView()
+        .tabItem { Label("Peer", systemImage: "person.2") }
+
+      Text("One Phone")
+        .tabItem { Label("One Phone", systemImage: "phone") }
+
+      ConventionView()
+        .tabItem { Label("Convention", systemImage: "speaker.wave.2") }
+    }
   }
 }
