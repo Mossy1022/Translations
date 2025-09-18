@@ -396,7 +396,7 @@ final class TranslationViewModel: ObservableObject {
 
           if finalTx.isEmpty || finalTx.caseInsensitiveCompare(rawTrim) == .orderedSame {
             if !rawTrim.isEmpty,
-               let better = try? await AzureTextTranslator.translate(
+               let better = try? await UnifiedTranslateService.translate(
                  rawTrim,
                  from: fromFull,
                  to:   dstFull
@@ -498,7 +498,7 @@ final class TranslationViewModel: ObservableObject {
 
       Task {
         do {
-          let tx = try await AzureTextTranslator.translate(text, from: myLanguage, to: peerLanguage)
+          let tx = try await UnifiedTranslateService.translate(text, from: myLanguage, to: peerLanguage)
           await MainActor.run {
             replaceLocalTurn(id: pendingId, with: LocalTurn(
               id: pendingId,
@@ -549,7 +549,7 @@ final class TranslationViewModel: ObservableObject {
 
       Task {
         do {
-          let tx = try await AzureTextTranslator.translate(text, from: peerLanguage, to: myLanguage)
+          let tx = try await UnifiedTranslateService.translate(text, from: peerLanguage, to: myLanguage)
           await MainActor.run {
             replaceLocalTurn(id: pendingId, with: LocalTurn(
               id: pendingId,
@@ -618,7 +618,7 @@ final class TranslationViewModel: ObservableObject {
 
       Task {
         do {
-          let tx = try await AzureTextTranslator.translate(
+          let tx = try await UnifiedTranslateService.translate(
             m.originalText,
             from: m.sourceLanguageCode,
             to:   myLanguage)

@@ -162,7 +162,7 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
           guard let self else { return }
 
           if !raw.isEmpty,
-             let better = try? await AzureTextTranslator.translate(
+             let better = try? await UnifiedTranslateService.translate(
                raw,
                from: self.last_src_lang,
                to:   self.last_dst_lang
