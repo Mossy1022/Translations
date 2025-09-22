@@ -45,7 +45,7 @@ struct ContentView: View {
                       voices:        view_model.availableVoices)
 
             Conversation_scroll(my_text:  view_model.myTranscribedText,
-                                peer_label: "Peer",
+                                peer_label: "Peer".localized,
                                 peer_text: view_model.peerSaidText,
                                 translated: view_model.translatedTextForMeToHear)
 
@@ -57,7 +57,7 @@ struct ContentView: View {
                           start_action:  view_model.startListening,
                           stop_action:   view_model.stopListening)
 
-            Button("Clear History") { view_model.resetConversationHistory() }
+            Button("Clear History".localized) { view_model.resetConversationHistory() }
               .font(.caption)
               .foregroundColor(.white.opacity(0.7))
               .padding(.top, 4)
@@ -103,9 +103,9 @@ private struct ModePicker: View {
   @Binding var mode: TranslationViewModel.Mode
   var body: some View {
     Picker("Mode", selection: $mode) {
-      Text("Peer").tag(TranslationViewModel.Mode.peer)
-      Text("One Phone").tag(TranslationViewModel.Mode.onePhone)
-      Text("Convention").tag(TranslationViewModel.Mode.convention)
+      Text("Peer".localized).tag(TranslationViewModel.Mode.peer)
+      Text("One Phone".localized).tag(TranslationViewModel.Mode.onePhone)
+      Text("Convention".localized).tag(TranslationViewModel.Mode.convention)
     }
     .pickerStyle(.segmented)
     .padding(.horizontal, 2)
@@ -116,8 +116,15 @@ private struct Connection_pill: View {
   let status: String
   let peer_count: Int
   private var colour: Color {
-    if status.contains("Connected") || status.contains("One Phone") || status.contains("Convention") { return EwonicTheme.pillConnected }
-    if status.contains("Connecting") { return EwonicTheme.pillConnecting }
+    let connectedPrefix = Localization.localized("Connected to %@", "")
+    let onePhone        = Localization.localized("One Phone")
+    let convention      = Localization.localized("Convention")
+    if status.hasPrefix(connectedPrefix) || status == onePhone || status == convention {
+      return EwonicTheme.pillConnected
+    }
+    if status == Localization.localized("Connecting…") {
+      return EwonicTheme.pillConnecting
+    }
     return EwonicTheme.pillDisconnected
   }
   var body: some View {
@@ -141,7 +148,7 @@ private struct Permission_card: View {
     VStack(spacing: 12) {
       Text(msg).multilineTextAlignment(.center)
         .font(.callout.weight(.medium))
-      Button("Grant Permissions", action: req)
+      Button("Grant Permissions".localized, action: req)
         .buttonStyle(.borderedProminent)
     }
     .padding()
@@ -194,7 +201,7 @@ private struct Lang_menu: View {
       ForEach(list) { l in Button(l.name) { code = l.code } }
     } label: {
       HStack(spacing: 4) {
-        Text(label + ":")
+        Text(Localization.localized(label) + ":")
         Text(short(code)).fontWeight(.semibold)
         Image(systemName: "chevron.down")
       }
@@ -233,7 +240,7 @@ private struct Voice_bar: View {
       }
       if !voice_for_lang.isEmpty {
         Divider()
-        Button("System defaults") {
+        Button("System defaults".localized) {
           voice_for_lang.removeAll()
           voice_for_lang = [:]
         }
@@ -241,7 +248,7 @@ private struct Voice_bar: View {
     } label: {
       HStack(spacing:4){
         Image(systemName:"speaker.wave.2.fill")
-        Text("Voices").fontWeight(.semibold)
+        Text("Voices".localized).fontWeight(.semibold)
         Image(systemName:"chevron.down")
       }
       .padding(.horizontal,10).padding(.vertical,6)
@@ -267,12 +274,12 @@ private struct Conversation_scroll: View {
     ScrollView {
       VStack(spacing: 14) {
         if !my_text.isEmpty {
-          Bubble(label: "You",  text: my_text,
+          Bubble(label: "You".localized,  text: my_text,
                  colour: EwonicTheme.bubbleSent, align: .leading)
         }
         Bubble(label: peer_label, text: peer_text,
                colour: EwonicTheme.bubbleReceived, align: .trailing)
-        Bubble(label: "Live", text: translated,
+        Bubble(label: "Live".localized, text: translated,
                colour: EwonicTheme.bubbleTranslated, align: .trailing, loud: true)
       }
     }
@@ -305,14 +312,14 @@ private struct Settings_sliders: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       VStack(alignment: .leading) {
-        Text("Mic Sensitivity")
+        Text("Mic Sensitivity".localized)
           .font(.caption)
           .foregroundColor(.white.opacity(0.7))
         Slider(value: $mic, in: 0...1)
           .tint(EwonicTheme.accent)
       }
       VStack(alignment: .leading) {
-        Text("Playback Speed")
+        Text("Playback Speed".localized)
           .font(.caption)
           .foregroundColor(.white.opacity(0.7))
         Slider(value: $speed, in: 0...1)
@@ -334,11 +341,12 @@ private struct VoicePickerForLang: View {
                          .sorted { $0.name < $1.name }
 
     let currentId = voice_for_lang[lang]
-    let currentName = filtered.first(where: { $0.identifier == currentId })?.name ?? "System"
+    let currentName = filtered.first(where: { $0.identifier == currentId })?.name
+                    ?? Localization.localized("System default")
 
     Menu {
       Section(header: Text(title)) {
-        Button("System default") {
+        Button("System default".localized) {
           voice_for_lang.removeValue(forKey: lang)
           voice_for_lang = voice_for_lang
         } 
@@ -389,7 +397,8 @@ private struct Record_button: View {
       HStack {
         if is_processing { ProgressView().progressViewStyle(.circular) }
         Image(systemName: is_listening ? "stop.fill" : "mic.fill")
-        Text(is_listening ? "Stop" : (is_processing ? "Processing…" : "Start"))
+        Text(is_listening ? "Stop".localized
+                          : (is_processing ? "Processing…".localized : "Start".localized))
       }
       .frame(maxWidth: .infinity)
       .padding()
@@ -408,7 +417,7 @@ private struct PeerDiscoveryView: View {
 
   var body: some View {
     VStack(spacing: 18) {
-      Text("Connect to a Peer")
+      Text("Connect to a Peer".localized)
         .font(.title2.weight(.semibold))
 
       HStack(spacing: 20) {
@@ -416,7 +425,7 @@ private struct PeerDiscoveryView: View {
           session.stopBrowsing()
           session.startHosting()
         } label: {
-          Label("Host", systemImage: "antenna.radiowaves.left.and.right")
+          Label("Host".localized, systemImage: "antenna.radiowaves.left.and.right")
             .frame(maxWidth: .infinity)
             .padding()
         }
@@ -427,7 +436,7 @@ private struct PeerDiscoveryView: View {
           session.stopHosting()
           session.startBrowsing()
         } label: {
-          Label("Join", systemImage: "magnifyingglass")
+          Label("Join".localized, systemImage: "magnifyingglass")
             .frame(maxWidth: .infinity)
             .padding()
         }
@@ -437,7 +446,7 @@ private struct PeerDiscoveryView: View {
       .buttonStyle(.plain)
 
       if !session.discoveredPeers.isEmpty {
-        Text("Found Peers:")
+        Text("Found Peers:".localized)
           .font(.headline)
 
         List(session.discoveredPeers, id: \.self) { peer in
@@ -451,14 +460,14 @@ private struct PeerDiscoveryView: View {
       } else if session.isBrowsing || session.isAdvertising {
         HStack {
           ProgressView()
-          Text(session.isBrowsing ? "Searching…" : "Waiting…")
+          Text(session.isBrowsing ? "Searching…".localized : "Waiting…".localized)
         }
         .foregroundColor(.white.opacity(0.7))
       }
 
       if session.connectionState != .notConnected ||
          session.isBrowsing || session.isAdvertising {
-        Button("Stop Activities") { session.disconnect() }
+        Button("Stop Activities".localized) { session.disconnect() }
           .padding(.top, 8)
           .buttonStyle(.bordered)
           .tint(.red)
@@ -514,7 +523,7 @@ private struct ConventionScreen: View {
               voices:        vm.availableVoices)
 
     Conversation_scroll(my_text: "",
-                        peer_label: "Speaker",
+                        peer_label: "Speaker".localized,
                         peer_text: vm.peerSaidText,
                         translated: vm.translatedTextForMeToHear)
 
@@ -526,7 +535,7 @@ private struct ConventionScreen: View {
                   start_action:  vm.startListening,
                   stop_action:   vm.stopListening)
 
-    Button("Clear History") { vm.resetConversationHistory() }
+    Button("Clear History".localized) { vm.resetConversationHistory() }
       .font(.caption)
       .foregroundColor(.white.opacity(0.7))
       .padding(.top, 4)
@@ -542,12 +551,12 @@ private struct OnePhoneConversationScreen: View {
     VStack(spacing: 14) {
       // Title line like Google’s “Conversation”
       HStack {
-        Text("Conversation")
+        Text("Conversation".localized)
           .font(.title2.weight(.semibold))
         Spacer()
         Menu {
           // keep future options here
-          Button("Clear History") { vm.localTurns.removeAll() }
+          Button("Clear History".localized) { vm.localTurns.removeAll() }
         } label: {
           Image(systemName: "ellipsis.circle").font(.title3)
         }
@@ -603,7 +612,7 @@ private struct OnePhoneConversationScreen: View {
           title: labelFor(vm.myLanguage),
           code:  vm.myLanguage,
           languages: vm.availableLanguages,
-          placeholder: vm.isAutoListening ? listeningLabel(for: vm.myLanguage) : "Enter text",
+          placeholder: vm.isAutoListening ? listeningLabel(for: vm.myLanguage) : "Enter text".localized,
           text: $vm.leftDraft,
           onLanguageChanged: { vm.myLanguage = $0 },
           onSend: vm.submitLeftDraft
@@ -613,7 +622,7 @@ private struct OnePhoneConversationScreen: View {
           title: labelFor(vm.peerLanguage),
           code:  vm.peerLanguage,
           languages: vm.availableLanguages,
-          placeholder: vm.isAutoListening ? listeningLabel(for: vm.peerLanguage) : "Enter text",
+          placeholder: vm.isAutoListening ? listeningLabel(for: vm.peerLanguage) : "Enter text".localized,
           text: $vm.rightDraft,
           onLanguageChanged: { vm.peerLanguage = $0 },
           onSend: vm.submitRightDraft
@@ -644,7 +653,7 @@ private struct OnePhoneConversationScreen: View {
     case "de": return "Zuhören…"
     case "ja": return "リスニング中…"
     case "zh": return "正在聆听…"
-    default:   return "Listening…"
+    default:   return "Listening…".localized
     }
   }
 }
@@ -682,7 +691,7 @@ private struct LiveCard: View {
   let text: String
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      Text("Live").font(.caption).foregroundColor(.secondary)
+      Text("Live".localized).font(.caption).foregroundColor(.secondary)
       Text(text).font(.headline)
         .foregroundColor(.white)
     }

@@ -115,7 +115,7 @@ final class MultipeerSession: NSObject, ObservableObject {
     func send(message: MessageData, reliable: Bool = true) {
       mpq.async { [self] in
         guard !session.connectedPeers.isEmpty else {
-          let msg = "No connected peers – message not sent"
+          let msg = Localization.localized("No connected peers – message not sent")
           log.debug("\(msg)")
           errorSubject.send(msg)
           return
@@ -123,7 +123,7 @@ final class MultipeerSession: NSObject, ObservableObject {
         guard let raw = try? JSONEncoder().encode(message),
               let bin = try? (raw as NSData).compressed(using: .zlib) as Data
         else {
-          let msg = "Failed to encode/compress MessageData"
+          let msg = Localization.localized("Failed to encode/compress MessageData")
           log.error("\(msg)")
           errorSubject.send(msg)
           return
@@ -133,7 +133,7 @@ final class MultipeerSession: NSObject, ObservableObject {
           try session.send(bin, toPeers: session.connectedPeers, with: mode)
           log.debug("📤 Sent \(bin.count) B (\(mode == .reliable ? "R" : "U"))")
         } catch {
-          let msg = "session.send error: \(error.localizedDescription)"
+          let msg = Localization.localized("session.send error: %@", error.localizedDescription)
           log.error("\(msg)")
           errorSubject.send(msg)
         }
@@ -192,7 +192,7 @@ extension MultipeerSession: MCSessionDelegate {
         self.connectionState = .notConnected
       }
       log.debug("[Multipeer] \(id.displayName) DISCONNECTED")
-      errorSubject.send("Peer \(id.displayName) disconnected")
+      errorSubject.send(Localization.localized("Peer %@ disconnected", id.displayName))
       if connectedPeers.isEmpty { startBrowsing() }
 
     @unknown default: break
@@ -205,7 +205,7 @@ extension MultipeerSession: MCSessionDelegate {
         let raw = try? (data as NSData).decompressed(using: .zlib) as Data,
         let msg = try? JSONDecoder().decode(MessageData.self, from: raw)
       else {
-        let err = "Failed to decode message from \(id.displayName)"
+        let err = Localization.localized("Failed to decode message from %@", id.displayName)
         log.error("\(err)")
         errorSubject.send(err)
         return
@@ -236,7 +236,7 @@ extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
   func advertiser(_: MCNearbyServiceAdvertiser,
                   didNotStartAdvertisingPeer error: Error) {
     DispatchQueue.main.async {
-      self.errorSubject.send("Advertiser error: \(error.localizedDescription)")
+      self.errorSubject.send(Localization.localized("Advertiser error: %@", error.localizedDescription))
     }
   }
 
@@ -273,7 +273,7 @@ extension MultipeerSession: MCNearbyServiceBrowserDelegate {
   func browser(_: MCNearbyServiceBrowser,
                didNotStartBrowsingForPeers error: Error) {
     DispatchQueue.main.async {
-      self.errorSubject.send("Browser error: \(error.localizedDescription)")
+      self.errorSubject.send(Localization.localized("Browser error: %@", error.localizedDescription))
     }
   }
 }

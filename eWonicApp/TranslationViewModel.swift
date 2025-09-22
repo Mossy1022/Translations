@@ -29,19 +29,21 @@ final class TranslationViewModel: ObservableObject {
   @Published var ttsService       = AppleTTSService()
 
   // ─────────────────────────────── UI state (Peer screen)
-  @Published var myTranscribedText         = "Tap 'Start' to speak."
+  @Published var myTranscribedText         = "Tap 'Start' to speak.".localized
   @Published var peerSaidText              = ""
   @Published var translatedTextForMeToHear = ""
 
-  @Published var connectionStatus        = "Not Connected"
+  @Published var connectionStatus        = "Not Connected".localized
   @Published var isProcessing            = false
-  @Published var permissionStatusMessage = "Checking permissions…"
+  @Published var permissionStatusMessage = "Checking permissions…".localized
   @Published var hasAllPermissions       = false
   @Published var errorMessage: String?
 
   // ─────────────────────────────── Languages
   /// On Peer screen: me → peer. On One‑Phone screen: left tile ↔ right tile.
-  @Published var myLanguage   = "en-US"  { didSet { refreshVoices(); multipeerSession.updateLocalLanguage(myLanguage) } }
+  @Published var myLanguage   = LanguageSettings.currentLanguage.rawValue  {
+    didSet { refreshVoices(); multipeerSession.updateLocalLanguage(myLanguage) }
+  }
   @Published var peerLanguage = "es-US"  { didSet { refreshVoices() } } // Spanish (Latin America)
 
   struct Language: Identifiable, Hashable {
@@ -265,23 +267,23 @@ final class TranslationViewModel: ObservableObject {
     sttService.requestPermission { [weak self] ok in
       guard let self else { return }
       hasAllPermissions       = ok
-      permissionStatusMessage = ok ? "Permissions granted."
-                                   : "Speech & Microphone permission denied."
+      permissionStatusMessage = ok ? "Permissions granted.".localized
+                                   : "Speech & Microphone permission denied.".localized
       if ok { sttService.setupSpeechRecognizer(languageCode: myLanguage) }
     }
   }
 
   // ─────────────────────────────── Mic control
     func startListening() {
-      guard hasAllPermissions else { myTranscribedText = "Missing permissions."; return }
+      guard hasAllPermissions else { myTranscribedText = "Missing permissions.".localized; return }
       if mode == .peer {
         guard multipeerSession.connectionState == .connected else {
-          myTranscribedText = "Not connected."; return
+          myTranscribedText = "Not connected.".localized; return
         }
         guard !sttService.isListening else { return }
         resetEarlyTTSState()
         isProcessing = true
-        myTranscribedText = "Listening…"
+        myTranscribedText = "Listening…".localized
         peerSaidText = ""; translatedTextForMeToHear = ""
         (sttService as! AzureSpeechTranslationService).start(src: myLanguage, dst: peerLanguage)
       } else if mode == .convention {
@@ -409,9 +411,9 @@ final class TranslationViewModel: ObservableObject {
           await MainActor.run {
             localTurns.append(LocalTurn(
               sourceLang:   detectedSrc.isEmpty ? fromFull : detectedSrc,
-              sourceText:   rawTrim.isEmpty ? "(inaudible)" : rawTrim,
+              sourceText:   rawTrim.isEmpty ? "(inaudible)".localized : rawTrim,
               targetLang:   dstFull,
-              translatedText: finalTx.isEmpty ? "(unavailable)" : finalTx,
+              translatedText: finalTx.isEmpty ? "(unavailable)".localized : finalTx,
               timestamp:    Date().timeIntervalSince1970
             ))
 
@@ -435,15 +437,16 @@ final class TranslationViewModel: ObservableObject {
     Publishers.CombineLatest($mode, multipeerSession.$connectionState)
       .receive(on: RunLoop.main)
       .map { [weak self] mode, state -> String in
-        guard let self else { return "Not Connected" }
-        if mode == .onePhone { return "One Phone" }
-        if mode == .convention { return "Convention" }
-        let peer = multipeerSession.connectedPeers.first?.displayName ?? "peer"
+        guard let self else { return Localization.localized("Not Connected") }
+        if mode == .onePhone { return Localization.localized("One Phone") }
+        if mode == .convention { return Localization.localized("Convention") }
+        let peerName = multipeerSession.connectedPeers.first?.displayName
+        let peer = peerName ?? Localization.localized("peer")
         switch state {
-        case .notConnected: return "Not Connected"
-        case .connecting:   return "Connecting…"
-        case .connected:    return "Connected to \(peer)"
-        @unknown default:   return "Unknown"
+        case .notConnected: return Localization.localized("Not Connected")
+        case .connecting:   return Localization.localized("Connecting…")
+        case .connected:    return Localization.localized("Connected to %@", peer)
+        @unknown default:   return Localization.localized("Unknown")
         }
       }
       .assign(to: &$connectionStatus)
@@ -491,7 +494,7 @@ final class TranslationViewModel: ObservableObject {
         sourceLang: myLanguage,
         sourceText: text,
         targetLang: peerLanguage,
-        translatedText: "…",
+        translatedText: Localization.localized("…"),
         timestamp: now
       ))
       leftDraft = ""
@@ -513,13 +516,13 @@ final class TranslationViewModel: ObservableObject {
           }
         } catch {
           await MainActor.run {
-            errorMessage = "Text translation failed. Speaking original."
+            errorMessage = "Text translation failed. Speaking original.".localized
             replaceLocalTurn(id: pendingId, with: LocalTurn(
               id: pendingId,
               sourceLang: myLanguage,
               sourceText: text,
               targetLang: peerLanguage,
-              translatedText: "(untranslated) \(text)",
+              translatedText: "(untranslated) %@".localizedFormat(text),
               timestamp: now
             ))
             // Fallback: speak original in the sender’s language to avoid mismatched audio
@@ -542,7 +545,7 @@ final class TranslationViewModel: ObservableObject {
         sourceLang: peerLanguage,
         sourceText: text,
         targetLang: myLanguage,
-        translatedText: "…",
+        translatedText: Localization.localized("…"),
         timestamp: now
       ))
       rightDraft = ""
@@ -564,13 +567,13 @@ final class TranslationViewModel: ObservableObject {
           }
         } catch {
           await MainActor.run {
-            errorMessage = "Text translation failed. Speaking original."
+            errorMessage = "Text translation failed. Speaking original.".localized
             replaceLocalTurn(id: pendingId, with: LocalTurn(
               id: pendingId,
               sourceLang: peerLanguage,
               sourceText: text,
               targetLang: myLanguage,
-              translatedText: "(untranslated) \(text)",
+              translatedText: "(untranslated) %@".localizedFormat(text),
               timestamp: now
             ))
             ttsService.speak(text: text, languageCode: peerLanguage,
@@ -624,7 +627,7 @@ final class TranslationViewModel: ObservableObject {
             to:   myLanguage)
           await MainActor.run {
             if m.isFinal {
-              peerSaidText = "Peer: \(tx)"
+              peerSaidText = "Peer: %@".localizedFormat(tx)
             } else {
               translatedTextForMeToHear = tx
             }
@@ -635,7 +638,7 @@ final class TranslationViewModel: ObservableObject {
           }
         } catch {
           await MainActor.run {
-            errorMessage = "Text translation failed."
+            errorMessage = "Text translation failed.".localized
             isProcessing = false
           }
         }
@@ -673,7 +676,7 @@ final class TranslationViewModel: ObservableObject {
 
   // ─────────────────────────────── Utilities
   func resetConversationHistory() {
-    myTranscribedText         = "Tap 'Start' to speak."
+    myTranscribedText         = "Tap 'Start' to speak.".localized
     peerSaidText              = ""
     translatedTextForMeToHear = ""
     localTurns.removeAll()
