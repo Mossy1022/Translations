@@ -79,7 +79,7 @@ final class TranslationViewModel: ObservableObject {
   @Published var micSensitivity: Double = 0.5 {
     didSet { AudioSessionManager.shared.setInputGain(Float(micSensitivity)) }
   }
-  @Published var playbackSpeed: Double = 0.55 {
+  @Published var playbackSpeed: Double = Double(AppleTTSService.normalizedDefaultRate) {
     didSet { ttsService.speech_rate = Float(playbackSpeed) }
   }
 
