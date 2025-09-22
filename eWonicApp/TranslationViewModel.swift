@@ -218,49 +218,52 @@ final class TranslationViewModel: ObservableObject {
     
 
   // ─────────────────────────────── Init
-  init() {
-    multipeerSession = MultipeerSession(localLanguage: myLanguage)
-    checkAllPermissions()
-    refreshVoices()
-    wireConnectionBadge()
-    wirePeerPipelines()
-    wireAutoPipelines()
-    wireMicPauseDuringPlayback()
+    init() {
+      let initialLang = LanguageSettings.currentLanguage.rawValue
+      self.multipeerSession = MultipeerSession(localLanguage: initialLang)
 
-    AudioSessionManager.shared.setInputGain(Float(micSensitivity))
-    ttsService.speech_rate = Float(playbackSpeed)
+      checkAllPermissions()
+      refreshVoices()
+      wireConnectionBadge()
+      wirePeerPipelines()
+      wireAutoPipelines()
+      wireMicPauseDuringPlayback()
 
-    // Push selected voices into TTS preference registry
-    $voice_for_lang
-      .receive(on: RunLoop.main)
-      .sink { [weak self] mapping in
-        guard let self else { return }
-        for (lang, id) in mapping {
-          self.ttsService.setPreferredVoice(identifier: id, for: lang)
+      AudioSessionManager.shared.setInputGain(Float(micSensitivity))
+      ttsService.speech_rate = Float(playbackSpeed)
+
+      // Push selected voices into TTS preference registry
+      $voice_for_lang
+        .receive(on: RunLoop.main)
+        .sink { [weak self] mapping in
+          guard let self else { return }
+          for (lang, id) in mapping {
+            self.ttsService.setPreferredVoice(identifier: id, for: lang)
+          }
         }
+        .store(in: &cancellables)
+
+      // All error banners feed into one place
+      multipeerSession.errorSubject
+        .merge(with:
+          (sttService as! AzureSpeechTranslationService).errorSubject,
+          autoService.errorSubject,
+          AudioSessionManager.shared.errorSubject
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] msg in self?.errorMessage = msg }
+        .store(in: &cancellables)
+
+      // Switching to One Phone disables radios
+      $mode.removeDuplicates()
+        .sink { [weak self] m in if m == .onePhone { self?.multipeerSession.disconnect() } }
+        .store(in: &cancellables)
+
+      multipeerSession.onMessageReceived = { [weak self] msg in
+        self?.handleReceivedMessage(msg)
       }
-      .store(in: &cancellables)
-
-    // All error banners feed into one place
-    multipeerSession.errorSubject
-      .merge(with:
-        (sttService as! AzureSpeechTranslationService).errorSubject,
-        autoService.errorSubject,
-        AudioSessionManager.shared.errorSubject
-      )
-      .receive(on: RunLoop.main)
-      .sink { [weak self] msg in self?.errorMessage = msg }
-      .store(in: &cancellables)
-
-    // Switching to One Phone disables radios
-    $mode.removeDuplicates()
-      .sink { [weak self] m in if m == .onePhone { self?.multipeerSession.disconnect() } }
-      .store(in: &cancellables)
-
-    multipeerSession.onMessageReceived = { [weak self] msg in
-      self?.handleReceivedMessage(msg)
     }
-  }
+
 
   // ─────────────────────────────── Permissions
   func checkAllPermissions() {

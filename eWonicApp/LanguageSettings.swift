@@ -328,7 +328,7 @@ enum Localization {
     localized(key, arguments: args)
   }
 
-  private static func localized(_ key: String, arguments: [CVarArg]) -> String {
+fileprivate static func localized(_ key: String, arguments: [CVarArg]) -> String {
     let language = LanguageSettings.currentLanguage
     let template = translations[language]?[key] ?? key
     guard !arguments.isEmpty else { return template }

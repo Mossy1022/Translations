@@ -88,7 +88,7 @@ private struct OfflineLexicon {
 
       if let phrase = phraseMap[normalized], !phrase.isEmpty {
         let rebuilt = OfflineTable.rebuild(original: original, with: phrase)
-        let changed = !phrase.caseInsensitiveCompare(trimmed).isOrderedSame
+        let changed = phrase.caseInsensitiveCompare(trimmed) != .orderedSame
         return (rebuilt, changed)
       }
 
