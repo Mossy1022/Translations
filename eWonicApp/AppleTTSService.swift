@@ -13,10 +13,13 @@ import Combine
 /// Thin wrapper around `AVSpeechSynthesizer`
 final class AppleTTSService: NSObject, ObservableObject {
 
-  private let synthesizer = AVSpeechSynthesizer()
+  /// Normalized 0…1 value bound to UI controls.
+  /// Converted to an actual AVSpeechUtterance rate using ``actualRate(forNormalized:)``.
+  @Published var speech_rate: Float = AppleTTSService.normalizedDefaultRate {
+    didSet { speech_rate = clamp(speech_rate, min: 0, max: 1) }
+  }
 
-  /// (`0.0` … `1.0`) — 0.55 ≈ normal speed.
-  @Published var speech_rate: Float = 0.5
+  private let synthesizer = AVSpeechSynthesizer()
 
   @Published var isSpeaking = false
   let finishedSubject = PassthroughSubject<Void, Never>()
@@ -67,7 +70,7 @@ final class AppleTTSService: NSObject, ObservableObject {
     }
 
     // rate & padding
-    utt.rate              =  speech_rate
+    utt.rate              =  AppleTTSService.actualRate(forNormalized: speech_rate)
     utt.preUtteranceDelay  = 0
     utt.postUtteranceDelay = 0
       
@@ -132,9 +135,37 @@ final class AppleTTSService: NSObject, ObservableObject {
     }
 
 
-  private func clamp(_ x: Float, min: Float, max: Float) -> Float {
-    Swift.min(Swift.max(x, min), max)
+  private static let rateBounds: (min: Float, max: Float) = {
+    let base = AVSpeechUtteranceDefaultSpeechRate
+    let proposedMin = max(AVSpeechUtteranceMinimumSpeechRate, base * 0.6)
+    let proposedMax = min(AVSpeechUtteranceMaximumSpeechRate, base * 1.4)
+    if proposedMax - proposedMin < 0.05 {
+      return (AVSpeechUtteranceMinimumSpeechRate, AVSpeechUtteranceMaximumSpeechRate)
+    }
+    return (proposedMin, proposedMax)
+  }()
+
+  static let normalizedDefaultRate: Float = {
+    let range = rateBounds.max - rateBounds.min
+    guard range > 0 else { return clamp(AVSpeechUtteranceDefaultSpeechRate,
+                                        min: 0, max: 1) }
+    let normalized = (AVSpeechUtteranceDefaultSpeechRate - rateBounds.min) / range
+    return clamp(normalized, min: 0, max: 1)
+  }()
+
+  static func actualRate(forNormalized normalized: Float) -> Float {
+    let clamped = clamp(normalized, min: 0, max: 1)
+    let range = rateBounds.max - rateBounds.min
+    guard range > 0 else { return AVSpeechUtteranceDefaultSpeechRate }
+    return rateBounds.min + (range * clamped)
   }
+}
+
+private func clamp<T: Comparable>(_ value: T, min lower: T, max upper: T) -> T {
+  precondition(lower <= upper)
+  if value < lower { return lower }
+  if value > upper { return upper }
+  return value
 }
 
 // ─────────────────────────────────────────────

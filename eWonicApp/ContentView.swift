@@ -20,8 +20,10 @@ struct ContentView: View {
 
           ModePicker(mode: $view_model.mode)
 
-          Connection_pill(status: view_model.connectionStatus,
-                          peer_count: view_model.multipeerSession.connectedPeers.count)
+          if view_model.mode != .onePhone {
+            Connection_pill(status: view_model.connectionStatus,
+                            peer_count: view_model.multipeerSession.connectedPeers.count)
+          }
 
           if !view_model.hasAllPermissions {
             Permission_card(msg: view_model.permissionStatusMessage) {
@@ -329,6 +331,72 @@ private struct Settings_sliders: View {
   }
 }
 
+private struct VoiceSpeedSettingsSheet: View {
+  @Binding var speed: Double
+  @Environment(\.dismiss) private var dismiss
+
+  private let defaultValue = Double(AppleTTSService.normalizedDefaultRate)
+
+  private var multiplier: Double {
+    let current = Double(AppleTTSService.actualRate(forNormalized: Float(speed)))
+    let baseline = Double(AppleTTSService.actualRate(forNormalized: Float(defaultValue)))
+    guard baseline > 0 else { return 1 }
+    return current / baseline
+  }
+
+  private var multiplierText: String {
+    let percent = multiplier * 100
+    if abs(percent - 100) < 1 {
+      return "System default".localized
+    }
+    return String(format: "%.0f%%", percent)
+  }
+
+  var body: some View {
+    NavigationView {
+      VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: 12) {
+          Slider(value: $speed, in: 0...1)
+            .tint(EwonicTheme.accent)
+
+          HStack {
+            Image(systemName: "tortoise.fill")
+            Spacer()
+            Text(multiplierText)
+              .font(.caption.monospacedDigit())
+              .foregroundColor(.secondary)
+            Spacer()
+            Image(systemName: "hare.fill")
+          }
+          .foregroundColor(.secondary)
+        }
+
+        Button("System default".localized) {
+          speed = defaultValue
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(EwonicTheme.accent)
+        .disabled(abs(speed - defaultValue) < 0.001)
+
+        Spacer()
+      }
+      .padding()
+      .navigationTitle("Playback Speed".localized)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button(action: { dismiss() }) {
+            Image(systemName: "xmark")
+          }
+          .accessibilityLabel("Close".localized)
+        }
+      }
+    }
+    .presentationDetents([.medium])
+    .presentationDragIndicator(.visible)
+  }
+}
+
 private struct VoicePickerForLang: View {
   let title: String              // e.g. "English (US)"
   let lang: String               // e.g. "en-US"
@@ -546,16 +614,26 @@ private struct ConventionScreen: View {
 
 private struct OnePhoneConversationScreen: View {
   @ObservedObject var vm: TranslationViewModel
+  @State private var showVoiceSpeedSheet = false
 
   var body: some View {
     VStack(spacing: 14) {
       // Title line like Google’s “Conversation”
-      HStack {
+      HStack(spacing: 16) {
         Text("Conversation".localized)
           .font(.title2.weight(.semibold))
         Spacer()
+        Button {
+          showVoiceSpeedSheet = true
+        } label: {
+          Image(systemName: "slider.horizontal.3").font(.title3)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Playback Speed".localized)
+
         Menu {
-          // keep future options here
+          Button("Playback Speed".localized) { showVoiceSpeedSheet = true }
+          Divider()
           Button("Clear History".localized) { vm.localTurns.removeAll() }
         } label: {
           Image(systemName: "ellipsis.circle").font(.title3)
@@ -638,6 +716,9 @@ private struct OnePhoneConversationScreen: View {
           Spacer()
         }.padding(.top, 6)
       }
+    }
+    .sheet(isPresented: $showVoiceSpeedSheet) {
+      VoiceSpeedSettingsSheet(speed: $vm.playbackSpeed)
     }
   }
 
