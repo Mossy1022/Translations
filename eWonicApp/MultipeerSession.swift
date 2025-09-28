@@ -5,6 +5,9 @@ import os.log
 private let SERVICE_TYPE = "ewonic-xlat"
 private let mpq = DispatchQueue(label: "ewonic.multipeer", qos: .userInitiated)
 
+private let osMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+private let isIOS26Plus = osMajor >= 26
+
 private let log = Logger(subsystem: "com.evansoasis.ewonic",
                          category: "multipeer")
 
@@ -21,6 +24,8 @@ final class MultipeerSession: NSObject, ObservableObject {
   @Published private(set) var isBrowsing      = false
   @Published              var receivedMessage : MessageData?
 
+  @Published private(set) var peerOfflineCapable: [MCPeerID: Bool] = [:]
+    
   // ────────────────────────────── MC plumbing
   private let myPeerID = MCPeerID(displayName: UIDevice.current.name)
   private var localLanguage: String
@@ -45,10 +50,23 @@ final class MultipeerSession: NSObject, ObservableObject {
   // ────────────────────────────── Life‑cycle
   init(localLanguage: String) {
     self.localLanguage = localLanguage
-    self.advertiser = MCNearbyServiceAdvertiser(
-      peer: myPeerID,
-      discoveryInfo: ["lang": localLanguage],
-      serviceType: SERVICE_TYPE)
+      // In init(localLanguage:) replace advertiser construction:
+      self.advertiser = MCNearbyServiceAdvertiser(
+        peer: myPeerID,
+        discoveryInfo: [
+          "lang": localLanguage,
+          "o26": isIOS26Plus ? "1" : "0"
+        ],
+        serviceType: SERVICE_TYPE)
+
+      // And in updateLocalLanguage(_:) mirror that dictionary:
+      advertiser = MCNearbyServiceAdvertiser(
+        peer: myPeerID,
+        discoveryInfo: [
+          "lang": localLanguage,
+          "o26": isIOS26Plus ? "1" : "0"
+        ],
+        serviceType: SERVICE_TYPE)
     self.browser = MCNearbyServiceBrowser(
       peer: myPeerID,
       serviceType: SERVICE_TYPE)
@@ -59,20 +77,27 @@ final class MultipeerSession: NSObject, ObservableObject {
   deinit { disconnect() }
 
   /// Update the advertised discovery info with a new language code.
-  func updateLocalLanguage(_ lang: String) {
-    mpq.async { [self] in
-      guard lang != localLanguage else { return }
-      localLanguage = lang
-      let wasAdvertising = isAdvertising
-      advertiser.stopAdvertisingPeer()
-      advertiser = MCNearbyServiceAdvertiser(
-        peer: myPeerID,
-        discoveryInfo: ["lang": lang],
-        serviceType: SERVICE_TYPE)
-      advertiser.delegate = self
-      if wasAdvertising { advertiser.startAdvertisingPeer() }
+    func updateLocalLanguage(_ lang: String) {
+      mpq.async { [self] in
+        guard lang != localLanguage else { return }
+        localLanguage = lang
+
+        let wasAdvertising = isAdvertising
+        advertiser.stopAdvertisingPeer()
+
+        // ⬇️ Mirror initial discovery info, including offline capability flag
+        advertiser = MCNearbyServiceAdvertiser(
+          peer: myPeerID,
+          discoveryInfo: [
+            "lang": lang,
+            "o26": isIOS26Plus ? "1" : "0"
+          ],
+          serviceType: SERVICE_TYPE
+        )
+        advertiser.delegate = self
+        if wasAdvertising { advertiser.startAdvertisingPeer() }
+      }
     }
-  }
 
   // ────────────────────────────── Host / Join
   func startHosting() {
@@ -256,6 +281,7 @@ extension MultipeerSession: MCNearbyServiceBrowserDelegate {
                foundPeer id: MCPeerID,
                withDiscoveryInfo info: [String:String]?) {
     DispatchQueue.main.async {
+      if let cap = info?["o26"] { self.peerOfflineCapable[id] = (cap == "1") } else { self.peerOfflineCapable[id] = false }
       if !self.discoveredPeers.contains(id) { self.discoveredPeers.append(id) }
       if let lang = info?["lang"] { self.peerLanguages[id] = lang }
     }

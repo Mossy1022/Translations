@@ -15,9 +15,15 @@ final class AppleTTSService: NSObject, ObservableObject {
 
   /// Normalized 0…1 value bound to UI controls.
   /// Converted to an actual AVSpeechUtterance rate using ``actualRate(forNormalized:)``.
-  @Published var speech_rate: Float = AppleTTSService.normalizedDefaultRate {
-    didSet { speech_rate = clamp(speech_rate, min: 0, max: 1) }
-  }
+    @Published var speech_rate: Float = AppleTTSService.normalizedDefaultRate {
+      didSet {
+        // Clamp without reassigning the same value repeatedly
+        let clamped = max(0, min(1, speech_rate))
+        if clamped != speech_rate {
+          speech_rate = clamped
+        }
+      }
+    }
 
   private let synthesizer = AVSpeechSynthesizer()
 

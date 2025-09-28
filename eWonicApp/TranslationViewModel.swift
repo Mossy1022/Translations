@@ -21,6 +21,10 @@ final class TranslationViewModel: ObservableObject {
     case convention = "Convention"
   }
   @Published var mode: Mode = .peer
+    
+    private func sameBase(_ a: String, _ b: String) -> Bool {
+      return String(a.prefix(2)).lowercased() == String(b.prefix(2)).lowercased()
+    }
 
   // ─────────────────────────────── Services
   @Published var multipeerSession: MultipeerSession
@@ -38,6 +42,12 @@ final class TranslationViewModel: ObservableObject {
   @Published var permissionStatusMessage = "Checking permissions…".localized
   @Published var hasAllPermissions       = false
   @Published var errorMessage: String?
+    
+    
+    // Use early streaming in Peer and Convention (but not One-Phone).
+    private var allowEarlyStreaming: Bool {
+      return mode == .peer || mode == .convention
+    }
 
   // ─────────────────────────────── Languages
   /// On Peer screen: me → peer. On One‑Phone screen: left tile ↔ right tile.
@@ -51,7 +61,31 @@ final class TranslationViewModel: ObservableObject {
     let name: String
     let code: String
   }
+    
+    // ─────────────────────────────── One-Phone offline auto state
+    private var currentAutoLang: String = ""   // actual lang the native STT is using in One-Phone
 
+    private let nativeSTT = NativeSTTService()
+    private var useOfflineOnePhone: Bool {
+      if #available(iOS 26.0, *) { return true } else { return false }
+    }
+    private var useOfflinePeer: Bool {
+      if #available(iOS 26.0, *) {
+        // all connected peers must be offline capable
+        return multipeerSession.connectedPeers.allSatisfy { p in multipeerSession.peerOfflineCapable[p] == true }
+      }
+      return false
+    }
+    
+    private var expectedBaseAfterResume: String?  // “en” or “es” we *think* we’re hearing next
+    private var retargetWindowActive = false
+    private var retargetDeadline = Date()
+
+    // Add near other internals:
+    private var resumeAfterTTSTask: Task<Void, Never>?
+    // Which language STT should use next time we re-open in One-Phone mode
+    private var pendingAutoLang: String?
+    
   let availableLanguages: [Language] = [
     .init(name:"English (US)",             code:"en-US"),
     .init(name:"Spanish (Latin America)",  code:"es-US"),
@@ -142,7 +176,7 @@ final class TranslationViewModel: ObservableObject {
     }
 
     private func fireEarlyTTSBailout() {
-      guard mode == .peer || mode == .convention else { return }
+      guard allowEarlyStreaming else { return }   // was: guard mode == .peer
       let s = lastPartialForTurn
       guard !s.isEmpty, s.count > earlyTTSSentPrefix + earlyTTSMinChunkChars else { return }
       if let cut = lastWordBoundary(in: s, fromOffset: earlyTTSSentPrefix) {
@@ -151,13 +185,16 @@ final class TranslationViewModel: ObservableObject {
         emitChunk(chunk, isFinal: false)
         earlyTTSSentPrefix = s.distance(from: s.startIndex, to: cut)
       }
-      // schedule next bailout window
       startEarlyTTSBailTimer()
     }
 
     private func handlePeerPartial(_ s: String) {
       translatedTextForMeToHear = s
       lastPartialForTurn = s
+
+      // 🔒 Early-TTS is Peer-only. Convention should not speak partials.
+      guard mode == .peer else { return }
+
       if earlyTTSTimer == nil { startEarlyTTSBailTimer() }
 
       // Try to emit any full sentence(s) we haven’t sent yet
@@ -172,6 +209,26 @@ final class TranslationViewModel: ObservableObject {
         }
       }
     }
+    
+    private func handleStreamingPartial(_ s: String) {
+      translatedTextForMeToHear = s
+      lastPartialForTurn = s
+
+      guard allowEarlyStreaming else { return }
+
+      if earlyTTSTimer == nil { startEarlyTTSBailTimer() }
+
+      if let cut = lastSentenceBoundary(in: s, fromOffset: earlyTTSSentPrefix) {
+        let start = s.index(s.startIndex, offsetBy: earlyTTSSentPrefix)
+        let chunk = String(s[start..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if chunk.count >= earlyTTSMinChunkChars {
+          emitChunk(chunk, isFinal: false)
+          earlyTTSSentPrefix = s.distance(from: s.startIndex, to: cut)
+          startEarlyTTSBailTimer()
+        }
+      }
+    }
+
 
     private func finalizePeerTurn(with final: String) {
       earlyTTSTimer?.cancel(); earlyTTSTimer = nil
@@ -188,6 +245,7 @@ final class TranslationViewModel: ObservableObject {
         emitChunk(tail, isFinal: true)
       }
       resetEarlyTTSState()
+
     }
 
     // Boundary helpers
@@ -227,6 +285,8 @@ final class TranslationViewModel: ObservableObject {
       wireConnectionBadge()
       wirePeerPipelines()
       wireAutoPipelines()
+      wireOfflineOnePhonePipelines()
+      wirePeerPipelinesOffline()
       wireMicPauseDuringPlayback()
 
       AudioSessionManager.shared.setInputGain(Float(micSensitivity))
@@ -243,6 +303,11 @@ final class TranslationViewModel: ObservableObject {
         }
         .store(in: &cancellables)
 
+        $micSensitivity
+            .receive(on: RunLoop.main)
+            .sink { [weak self] v in self?.nativeSTT.sensitivity = Float(v) }
+            .store(in: &cancellables)
+        
       // All error banners feed into one place
       multipeerSession.errorSubject
         .merge(with:
@@ -276,97 +341,211 @@ final class TranslationViewModel: ObservableObject {
     }
   }
 
+    private var seenMessageIDs = Set<UUID>()
+    private var seenOrder: [UUID] = []
+    private let seenCap = 64
+
+    private func markSeen(_ id: UUID) -> Bool {
+      if seenMessageIDs.contains(id) { return false }
+      seenMessageIDs.insert(id)
+      seenOrder.append(id)
+      if seenOrder.count > seenCap {
+        let drop = seenOrder.removeFirst()
+        seenMessageIDs.remove(drop)
+      }
+      return true
+    }
+    
   // ─────────────────────────────── Mic control
     func startListening() {
       guard hasAllPermissions else { myTranscribedText = "Missing permissions.".localized; return }
-      if mode == .peer {
+
+      switch mode {
+      case .peer:
         guard multipeerSession.connectionState == .connected else {
           myTranscribedText = "Not connected.".localized; return
         }
-        guard !sttService.isListening else { return }
-        resetEarlyTTSState()
-        isProcessing = true
-        myTranscribedText = "Listening…".localized
-        peerSaidText = ""; translatedTextForMeToHear = ""
-        (sttService as! AzureSpeechTranslationService).start(src: myLanguage, dst: peerLanguage)
-      } else if mode == .convention {
-        guard !sttService.isListening else { return }
-        resetEarlyTTSState()
-        isProcessing = true
-        peerSaidText = ""; translatedTextForMeToHear = ""
-        (sttService as! AzureSpeechTranslationService).start(src: peerLanguage, dst: myLanguage)
-      } else {
+        if #available(iOS 26.0, *) {
+          guard !nativeSTT.isListening else { return }
+          resetEarlyTTSState()
+          isProcessing = true
+          myTranscribedText = "Listening…".localized
+          peerSaidText = ""; translatedTextForMeToHear = ""
+          nativeSTT.startTranscribing(languageCode: myLanguage)
+        } else {
+          // pre-26 behaviour
+          guard !sttService.isListening else { return }
+          resetEarlyTTSState()
+          isProcessing = true
+          myTranscribedText = "Listening…".localized
+          peerSaidText = ""; translatedTextForMeToHear = ""
+          (sttService as! AzureSpeechTranslationService).start(src: myLanguage, dst: peerLanguage)
+        }
+
+      case .convention:
+        if #available(iOS 26.0, *) {
+          guard !nativeSTT.isListening else { return }
+          resetEarlyTTSState()
+          isProcessing = true
+          peerSaidText = ""; translatedTextForMeToHear = ""
+          nativeSTT.startTranscribing(languageCode: peerLanguage)
+        } else {
+          guard !sttService.isListening else { return }
+          resetEarlyTTSState()
+          isProcessing = true
+          peerSaidText = ""; translatedTextForMeToHear = ""
+          (sttService as! AzureSpeechTranslationService).start(src: peerLanguage, dst: myLanguage)
+        }
+
+      case .onePhone:
         startAuto()
       }
     }
 
 
     func stopListening() {
-      if mode == .peer || mode == .convention {
-        (sttService as! AzureSpeechTranslationService).stop()
+      switch mode {
+      case .peer, .convention:
+        if useOfflinePeer {
+          if nativeSTT.isListening { nativeSTT.stopTranscribing() }
+        } else {
+          if sttService.isListening { (sttService as! AzureSpeechTranslationService).stop() }
+        }
         resetEarlyTTSState()
         isProcessing = false
-      } else {
+
+      case .onePhone:
         stopAuto()
       }
     }
 
-  // ─────────────────────────────── One‑Phone mic control
-  func startAuto() {
-    guard hasAllPermissions else { return }
-    guard !autoService.isListening else { return }
-    isProcessing = true
-    isAutoListening = true
-    autoService.start(between: myLanguage, and: peerLanguage)
-  }
 
-  func stopAuto() {
-    guard autoService.isListening else { return }
-    autoService.stop()
-    isProcessing = false
-    isAutoListening = false
-  }
+  // ─────────────────────────────── One‑Phone mic control
+    
+    private func startAutoOffline() {
+      guard !nativeSTT.isListening else { return }
+      isProcessing = false          // UI should show 'Start', not 'Processing…'
+      isAutoListening = true
+      currentAutoLang = myLanguage
+
+      // Arm a short retarget window for the first partials
+      expectedBaseAfterResume = String(currentAutoLang.prefix(2)).lowercased()
+      retargetWindowActive = true
+      retargetDeadline = Date().addingTimeInterval(2.0)
+
+      // Open mic
+      nativeSTT.startTranscribing(languageCode: currentAutoLang)
+      Log.d("OnePhone: start native STT @ \(currentAutoLang)")
+    }
+    
+    private func stopAutoOffline() {
+      if nativeSTT.isListening { nativeSTT.stopTranscribing() }
+      isAutoListening = false
+      isProcessing = false
+      retargetWindowActive = false
+      expectedBaseAfterResume = nil
+      Log.d("OnePhone: stop native STT")
+    }
+    
+    func startAuto() {
+      guard hasAllPermissions else { return }
+      if #available(iOS 26.0, *) {
+        startAutoOffline()   // native STT only
+      } else {
+        guard !autoService.isListening else { return }
+        isProcessing = true; isAutoListening = true
+        autoService.start(between: myLanguage, and: peerLanguage)
+      }
+    }
+
+    func stopAuto() {
+      if useOfflineOnePhone {
+        stopAutoOffline()
+      } else {
+        guard autoService.isListening else { return }
+        autoService.stop()
+        isProcessing = false; isAutoListening = false
+      }
+    }
 
   // ─────────────────────────────── Peer pipelines
     private func wirePeerPipelines() {
-
-      // Partials → early-TTS sentence/bailout logic
       sttService
         .partialResult
         .receive(on: RunLoop.main)
         .removeDuplicates()
         .throttle(for: .milliseconds(350), scheduler: RunLoop.main, latest: true)
         .sink { [weak self] txt in
-          self?.handlePeerPartial(txt)
+          guard let self, self.mode != .onePhone else { return }
+          self.handleStreamingPartial(txt)
         }
         .store(in: &cancellables)
 
-      // Finals → speak only the unsent tail + clear timers
       sttService
         .finalResult
         .receive(on: RunLoop.main)
         .sink { [weak self] tx in
-          guard let self else { return }
+          guard let self, self.mode != .onePhone else { return }
           isProcessing = false
           self.finalizePeerTurn(with: tx)
         }
         .store(in: &cancellables)
 
-      // Raw source finals (what was spoken)
       sttService
         .sourceFinalResult
         .receive(on: RunLoop.main)
         .sink { [weak self] txt in
-          guard let self else { return }
-          if mode == .peer {
-            myTranscribedText = txt
-          } else if mode == .convention {
-            peerSaidText = txt
-          }
+          guard let self, self.mode != .onePhone else { return }
+          if mode == .peer { myTranscribedText = txt }
+          else if mode == .convention { peerSaidText = txt }
         }
         .store(in: &cancellables)
     }
+    
+    // TranslationViewModel.swift
+    // ─────────────────────────────── Peer pipelines (iOS 26+ native STT → on-device MT)
+    private func wirePeerPipelinesOffline() {
+        nativeSTT.partialResultSubject
+          .receive(on: RunLoop.main)
+          .removeDuplicates()
+          .throttle(for: .milliseconds(350), scheduler: RunLoop.main, latest: true)
+          .sink { [weak self] txt in
+            guard let self, self.mode != .onePhone else { return }
+            // show the live line locally; don’t emit to peer
+            self.translatedTextForMeToHear = txt
+          }
+          .store(in: &cancellables)
 
+        nativeSTT.finalResultSubject
+          .receive(on: RunLoop.main)
+          .sink { [weak self] raw in
+            guard let self, self.mode != .onePhone else { return }
+            self.isProcessing = false
+
+            let src = (self.mode == .peer) ? self.myLanguage : self.peerLanguage
+            let dst = (self.mode == .peer) ? self.peerLanguage : self.myLanguage
+
+            Task {
+              let finalTx = (try? await UnifiedTranslateService.translate(raw, from: src, to: dst)) ?? raw
+              await MainActor.run {
+                // ✅ push to peer now (final, reliable)
+                self.sendTextToPeer(finalTx, isFinal: true, reliable: true)
+
+                // keep local state / early-tts tail logic intact
+                self.finalizePeerTurn(with: finalTx)
+              }
+            }
+          }
+          .store(in: &cancellables)
+        
+      nativeSTT.finalResultSubject
+        .receive(on: RunLoop.main)
+        .sink { [weak self] raw in
+          guard let self, self.mode != .onePhone else { return }
+          if self.mode == .peer { self.myTranscribedText = raw } else { self.peerSaidText = raw }
+        }
+        .store(in: &cancellables)
+    }
 
   // ─────────────────────────────── One‑Phone pipelines
   private func wireAutoPipelines() {
@@ -435,53 +614,269 @@ final class TranslationViewModel: ObservableObject {
       }
       .store(in:&cancellables)
   }
+    
+    // TranslationViewModel.swift
+    private func wireOfflineOnePhonePipelines() {
+      // PARTIALS → show live line & (optional) fast retarget
+      nativeSTT.partialResultSubject
+        .receive(on: RunLoop.main)
+        .throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] raw in
+          guard let self, self.mode == .onePhone else { return }
+          self.translatedTextForMeToHear = raw
 
-  private func wireConnectionBadge() {
-    Publishers.CombineLatest($mode, multipeerSession.$connectionState)
-      .receive(on: RunLoop.main)
-      .map { [weak self] mode, state -> String in
-        guard let self else { return Localization.localized("Not Connected") }
-        if mode == .onePhone { return Localization.localized("One Phone") }
-        if mode == .convention { return Localization.localized("Convention") }
-        let peerName = multipeerSession.connectedPeers.first?.displayName
-        let peer = peerName ?? Localization.localized("peer")
-        switch state {
-        case .notConnected: return Localization.localized("Not Connected")
-        case .connecting:   return Localization.localized("Connecting…")
-        case .connected:    return Localization.localized("Connected to %@", peer)
-        @unknown default:   return Localization.localized("Unknown")
-        }
-      }
-      .assign(to: &$connectionStatus)
-  }
-
-  /// Pause mic while device is speaking (works for both Peer & One‑Phone).
-  private func wireMicPauseDuringPlayback() {
-    ttsService.$isSpeaking
-      .receive(on: RunLoop.main)
-      .removeDuplicates()
-      .sink { [weak self] speaking in
-        guard let self else { return }
-        if speaking {
-          wasListeningPrePlayback = sttService.isListening || autoService.isListening
-          if sttService.isListening { (sttService as! AzureSpeechTranslationService).stop() }
-          if autoService.isListening { autoService.stop() }
-        } else {
-          if wasListeningPrePlayback {
-            if mode == .peer {
-              (sttService as! AzureSpeechTranslationService).start(src: myLanguage, dst: peerLanguage)
-            } else if mode == .convention {
-              (sttService as! AzureSpeechTranslationService).start(src: peerLanguage, dst: myLanguage)
-            } else {
-              autoService.start(between: myLanguage, and: peerLanguage)
-            }
-            wasListeningPrePlayback = false
+          guard self.useOfflineOnePhone, self.retargetWindowActive else { return }
+          if Date() > self.retargetDeadline {
+            self.retargetWindowActive = false
+            self.expectedBaseAfterResume = nil
+            return
           }
-          isProcessing = false
+          guard let guessBase = LanguageGuesser.base2(for: raw),
+                let expected  = self.expectedBaseAfterResume,
+                guessBase != expected else { return }
+
+          self.retargetWindowActive   = false
+          self.expectedBaseAfterResume = nil
+          let other = (guessBase == String(self.myLanguage.prefix(2)).lowercased())
+                    ? self.myLanguage : self.peerLanguage
+          self.nativeSTT.stopTranscribing()
+          Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            self.nativeSTT.startTranscribing(languageCode: other)
+          }
+        }
+        .store(in: &cancellables)
+
+      // FINALS → detect side, translate once, speak once (no duplicates)
+      nativeSTT.finalResultSubject
+        .receive(on: RunLoop.main)
+        .sink { [weak self] raw in
+          guard let self, self.mode == .onePhone else { return }
+          self.isProcessing = false
+
+          let myBase   = String(self.myLanguage.prefix(2)).lowercased()
+          let peerBase = String(self.peerLanguage.prefix(2)).lowercased()
+
+          let guess   = LanguageGuesser.base2(for: raw) ?? myBase
+          let srcFull = (guess == myBase) ? self.myLanguage : self.peerLanguage
+          let dstFull = (srcFull == self.myLanguage) ? self.peerLanguage : self.myLanguage
+
+          Task {
+            // Single translation pass (on-device on iOS 26)
+            let tx = (try? await UnifiedTranslateService.translate(raw, from: srcFull, to: dstFull)) ?? raw
+              await MainActor.run {
+                self.localTurns.append(LocalTurn(
+                  sourceLang: srcFull,
+                  sourceText: raw,
+                  targetLang: dstFull,
+                  translatedText: tx,
+                  timestamp: Date().timeIntervalSince1970
+                ))
+
+                self.translatedTextForMeToHear = tx
+                if srcFull == self.myLanguage { self.myTranscribedText = raw }
+                else                           { self.peerSaidText     = raw }
+
+                if !self.sameBase(srcFull, dstFull) {
+                  self.ttsService.speak(
+                    text: tx,
+                    languageCode: dstFull,
+                    voiceIdentifier: self.voice_for_lang[dstFull]
+                  )
+                }
+
+                // Bias the next listen to the other side and immediately re-open after TTS finishes.
+                self.pendingAutoLang = (srcFull == self.myLanguage) ? self.peerLanguage : self.myLanguage
+
+                // If TTS didn’t run (same base language), re-arm immediately.
+                if self.sameBase(srcFull, dstFull) {
+                  if !self.nativeSTT.isListening {
+                    self.nativeSTT.startTranscribing(languageCode: self.pendingAutoLang ?? self.myLanguage)
+                    self.pendingAutoLang = nil
+                  }
+                }
+              }
+          }
+        }
+        .store(in: &cancellables)
+    }
+
+
+    private func purity(of text: String, expectedTargetBase base: String) -> Double {
+      // Super-lightweight “is this mostly target language?” heuristic.
+      let tokens = text
+        .lowercased()
+        .split { !$0.isLetter }
+      guard !tokens.isEmpty else { return 0 }
+
+      let targetStopwords: Set<String>
+      switch base {
+      case "es":
+        targetStopwords = ["el","la","los","las","de","y","que","como","estás","hola","buenos","buenas","gracias","por","favor","sí","no","dónde","cuánto","yo","tú","usted","nosotros","ellos","muy","bien","mal"]
+      case "en":
+        targetStopwords = ["the","and","you","are","is","hello","hi","how","what","where","please","thanks","i","we","they","good","morning","night"]
+      case "fr":
+        targetStopwords = ["le","la","les","de","et","vous","je","bonjour","merci","s'il","est","où","comment"]
+      case "de":
+        targetStopwords = ["der","die","das","und","ist","wo","wie","hallo","danke","bitte","ich","du","wir","sie","guten"]
+      default:
+        targetStopwords = []
+      }
+
+      var hits = 0
+      for t in tokens {
+        if targetStopwords.contains(String(t)) { hits += 1 }
+      }
+      return Double(hits) / Double(tokens.count)
+    }
+    
+    var captureIsActive: Bool {
+      switch mode {
+      case .onePhone:
+        return nativeSTT.isListening && isAutoListening
+      case .peer, .convention:
+        return useOfflinePeer ? nativeSTT.isListening : sttService.isListening
+      }
+    }
+
+    // Tiny language guesser reused (keep private)
+    private static func guessBase2(_ raw: String) -> String? {
+      guard !raw.isEmpty else { return nil }
+
+      // Use Foundation's NSLinguisticTagger (no extra import needed)
+      if let lang = NSLinguisticTagger.dominantLanguage(for: raw) {
+        switch lang {
+        case "en": return "en"
+        case "es": return "es"
+        case "fr": return "fr"
+        case "de": return "de"
+        case "ja": return "ja"
+        case "zh", "zh-Hans", "zh-Hant": return "zh"
+        default: break
         }
       }
-      .store(in:&cancellables)
-  }
+
+      // Simple heuristic for Spanish characters
+      if raw.range(of: #"[áéíóúñ¿¡]"#, options: .regularExpression) != nil { return "es" }
+      return nil
+    }
+
+    private func restartAutoSTT(to lang: String) {
+      guard #available(iOS 26.0, *), currentAutoLang != lang else { return }
+      currentAutoLang = lang
+      // Pause -> restart the native recognizer in the new language
+      nativeSTT.stopTranscribing()
+      // Let CoreAudio breathe a tick to avoid "mDataByteSize (0)" logs
+      Task { @MainActor in
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        nativeSTT.startTranscribing(languageCode: lang)
+      }
+    }
+
+
+
+    private func wireConnectionBadge() {
+      Publishers.CombineLatest($mode, multipeerSession.$connectionState)
+        .receive(on: RunLoop.main)
+        .map { [weak self] mode, state -> String in
+          guard let self else { return Localization.localized("Not Connected") }
+
+          // One-Phone / Convention keep their fixed badges
+          if mode == .onePhone     { return Localization.localized("One Phone") }
+          if mode == .convention   { return Localization.localized("Convention") }
+
+          // Peer mode
+          let peerName = multipeerSession.connectedPeers.first?.displayName
+          let peer = peerName ?? Localization.localized("peer")
+
+          switch state {
+          case .notConnected:
+            return Localization.localized("Not Connected")
+
+          case .connecting:
+            return Localization.localized("Connecting…")
+
+          case .connected:
+            // Append " · On-Device" when *all* peers advertise iOS 26+
+            // (useOfflinePeer already checks the connectedPeers + capability map)
+            let base = Localization.localized("Connected to %@", peer)
+            if useOfflinePeer { return base + " · On-Device" }
+            return base
+
+          @unknown default:
+            return Localization.localized("Unknown")
+          }
+        }
+        .assign(to: &$connectionStatus)
+    }
+
+    /// Pause/resume the *correct* capture path (Azure vs native) while device is speaking.
+    /// Pause/resume the *correct* capture path (Azure vs native) while device is speaking.
+    private func wireMicPauseDuringPlayback() {
+      ttsService.$isSpeaking
+        .receive(on: RunLoop.main)
+        .removeDuplicates()
+        .sink { [weak self] speaking in
+          guard let self else { return }
+
+          if speaking {
+            // Snapshot intent to resume: in Peer/Convention we always want hot-mic after TTS.
+            wasListeningPrePlayback =
+              (mode != .onePhone) || sttService.isListening || autoService.isListening || nativeSTT.isListening
+
+            // Pause whichever capture path is active.
+            if sttService.isListening { (sttService as! AzureSpeechTranslationService).stop() }
+            if autoService.isListening { autoService.stop() }
+            if nativeSTT.isListening  { nativeSTT.stopTranscribing() }
+
+          } else {
+            // If we didn’t intend to keep listening (e.g., user stopped), bail quietly.
+            guard wasListeningPrePlayback else { isProcessing = false; return }
+            wasListeningPrePlayback = false
+
+            // Let AVAudioSession settle, then re-open the right mic.
+            resumeAfterTTSTask?.cancel()
+            resumeAfterTTSTask = Task { [weak self] in
+              try? await Task.sleep(nanoseconds: 1_200_000_000) // 1.2s
+              await MainActor.run {
+                guard let self else { return }
+                switch mode {
+                case .peer:
+                  if useOfflinePeer {
+                      print("Peer STT: starting native recognizer \(myLanguage)")
+                    nativeSTT.startTranscribing(languageCode: myLanguage)
+                  } else {
+                    (sttService as! AzureSpeechTranslationService).start(src: myLanguage, dst: peerLanguage)
+                  }
+                case .convention:
+                  if useOfflinePeer {
+                      print("Peer STT: starting native recognizer \(myLanguage)")
+                    nativeSTT.startTranscribing(languageCode: peerLanguage)
+                  } else {
+                    (sttService as! AzureSpeechTranslationService).start(src: peerLanguage, dst: myLanguage)
+                  }
+                case .onePhone:
+                  if useOfflineOnePhone {
+                    let lang = pendingAutoLang ?? myLanguage
+                    pendingAutoLang = nil
+                    expectedBaseAfterResume = String(lang.prefix(2)).lowercased()
+                    retargetWindowActive = true
+                    retargetDeadline = Date().addingTimeInterval(2.0)
+                    nativeSTT.startTranscribing(languageCode: lang)
+                      print("Peer STT: starting native recognizer \(myLanguage)")
+                  } else {
+                    autoService.start(between: myLanguage, and: peerLanguage)
+                  }
+                }
+                isProcessing = false
+              }
+            }
+          }
+        }
+        .store(in: &cancellables)
+    }
+
+
 
   // ─────────────────────────────── Typed input (One‑Phone)
     // ─────────────────────────────── Typed input (One-Phone)
@@ -596,38 +991,81 @@ final class TranslationViewModel: ObservableObject {
   // ─────────────────────────────── Messaging / Emission
     private func emitChunk(_ text: String, isFinal: Bool) {
       guard !text.isEmpty else { return }
-      if mode == .peer {
+
+      switch mode {
+      case .peer:
+        // send to peer; they will speak it
         sendTextToPeer(text, isFinal: isFinal, reliable: isFinal)
-      } else if mode == .convention {
-        ttsService.speak(text: text,
-                         languageCode: myLanguage,
-                         voiceIdentifier: voice_for_lang[myLanguage])
+
+      case .convention:
+        // speak locally (listener device)
+        // early chunks allowed when allowEarlyStreaming == true
+        ttsService.speak(
+          text: text,
+          languageCode: myLanguage,
+          voiceIdentifier: voice_for_lang[myLanguage]
+        )
+
+      case .onePhone:
+        // finals-only unless you add streaming MT
+        if isFinal {
+          ttsService.speak(
+            text: text,
+            languageCode: myLanguage,
+            voiceIdentifier: voice_for_lang[myLanguage]
+          )
+        }
       }
     }
-
     private func sendTextToPeer(_ text: String, isFinal: Bool, reliable: Bool) {
       guard !text.isEmpty else { return }
+
+      // The payload we send in Peer mode is already translated for the peer,
+      // so the language of *this* text is peerLanguage, not myLanguage.
+      let payloadLang = (mode == .peer) ? peerLanguage : myLanguage
+
       let msg = MessageData(
         id: UUID(),
         originalText:       text,
-        sourceLanguageCode: myLanguage,   // language I'm speaking
+        sourceLanguageCode: payloadLang,   // ✅ label with the language of the text we’re sending
         targetLanguageCode: nil,
         isFinal:            isFinal,
         timestamp:          Date().timeIntervalSince1970
       )
-      multipeerSession.send(message: msg, reliable: reliable)
+
+      if multipeerSession.connectedPeers.isEmpty {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+          self?.multipeerSession.send(message: msg, reliable: reliable)
+        }
+      } else {
+        multipeerSession.send(message: msg, reliable: reliable)
+      }
     }
 
+
+    // TranslationViewModel.swift
+    // ─────────────────────────────── Messaging (peer → me)
     private func handleReceivedMessage(_ m: MessageData) {
+      guard markSeen(m.id) else { return }         // 🚫 drop duplicates
       guard m.timestamp > lastReceivedTimestamp else { return }
       lastReceivedTimestamp = m.timestamp
 
-      Task {
-        do {
-          let tx = try await UnifiedTranslateService.translate(
-            m.originalText,
-            from: m.sourceLanguageCode,
-            to:   myLanguage)
+        Task {
+          // If the payload is already in my language, don’t translate again.
+          let srcBase = String(m.sourceLanguageCode.prefix(2)).lowercased()
+          let myBase  = String(myLanguage.prefix(2)).lowercased()
+
+          let tx: String
+          if srcBase == myBase {
+            tx = m.originalText.trimmingCharacters(in: .whitespacesAndNewlines)   // ✅ already my language
+          } else {
+            tx = (try? await UnifiedTranslateService.translate(
+                    m.originalText,
+                    from: m.sourceLanguageCode,
+                    to:   myLanguage
+                  )) ?? m.originalText
+          }
+
           await MainActor.run {
             if m.isFinal {
               peerSaidText = "Peer: %@".localizedFormat(tx)
@@ -635,18 +1073,16 @@ final class TranslationViewModel: ObservableObject {
               translatedTextForMeToHear = tx
             }
             isProcessing = true
+            print("PeerRX: \(useOfflinePeer ? "on-device" : "online") tx to \(myLanguage)")
             ttsService.speak(text: tx,
                              languageCode: myLanguage,
                              voiceIdentifier: voice_for_lang[myLanguage])
           }
-        } catch {
-          await MainActor.run {
-            errorMessage = "Text translation failed.".localized
-            isProcessing = false
-          }
         }
-      }
+
     }
+
+
 
 
   // ─────────────────────────────── Voices

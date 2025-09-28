@@ -13,7 +13,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Override point for customization after application launc
-//        AudioSessionManager.shared.configure()
+        AudioSessionManager.shared.configure()
+        if #available(iOS 26, *) {
+          Task { try? await AppleOnDeviceTranslator.shared.translate("Hello", from: "en-US", to: "es-US") }
+        }
 
         return true
     }

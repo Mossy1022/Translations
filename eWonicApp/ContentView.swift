@@ -41,7 +41,7 @@ struct ContentView: View {
             Language_bar(my_lang:   $view_model.myLanguage,
                          peer_lang: $view_model.peerLanguage,
                          list:      view_model.availableLanguages,
-                         disabled:  view_model.isProcessing || view_model.sttService.isListening)
+                         disabled:  view_model.isProcessing || view_model.captureIsActive)
 
             Voice_bar(voice_for_lang: $view_model.voice_for_lang,
                       voices:        view_model.availableVoices)
@@ -54,10 +54,11 @@ struct ContentView: View {
             Settings_sliders(mic: $view_model.micSensitivity,
                              speed: $view_model.playbackSpeed)
 
-            Record_button(is_listening:  view_model.sttService.isListening,
-                          is_processing: view_model.isProcessing,
-                          start_action:  view_model.startListening,
-                          stop_action:   view_model.stopListening)
+              Record_button(is_listening:  view_model.captureIsActive,
+                            is_processing: view_model.isProcessing,
+                            start_action:  view_model.startListening,
+                            stop_action:   view_model.stopListening)
+
 
             Button("Clear History".localized) { view_model.resetConversationHistory() }
               .font(.caption)
@@ -585,7 +586,7 @@ private struct ConventionScreen: View {
     Convention_language_bar(my_lang: $vm.myLanguage,
                             speaker_lang: $vm.peerLanguage,
                             list: vm.availableLanguages,
-                            disabled: vm.isProcessing || vm.sttService.isListening)
+                            disabled: vm.isProcessing || vm.captureIsActive)
 
     Voice_bar(voice_for_lang: $vm.voice_for_lang,
               voices:        vm.availableVoices)
@@ -598,7 +599,7 @@ private struct ConventionScreen: View {
     Settings_sliders(mic: $vm.micSensitivity,
                      speed: $vm.playbackSpeed)
 
-    Record_button(is_listening:  vm.sttService.isListening,
+    Record_button(is_listening:  vm.captureIsActive,
                   is_processing: vm.isProcessing,
                   start_action:  vm.startListening,
                   stop_action:   vm.stopListening)
