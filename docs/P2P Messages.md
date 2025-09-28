@@ -21,3 +21,8 @@
 **On receive**
 - If payload base equals my base → **no translation**; speak directly.
 - Else translate once from `sourceLanguageCode` → my language.
+
+**Receiver Post-processing**
+
+After one-pass translation (if needed), run the Target-Language Purity Guard from Emission.md.
+Do not delay TTS beyond the commit→TTS budget; if cleanup is slow, speak best-so-far and finalize text display afterwards.

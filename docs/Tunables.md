@@ -27,3 +27,15 @@
 - Echo events: **0** in 30‑min session
 - Thermal stable for **20min** continuous dialog
 - Reconnect: ≤ **1** missed turn during 10‑s AWDL drop
+
+**Purity & Cleanup**
+
+- MIN_PURITY_EN = 0.75, MIN_PURITY_ES = 0.75
+- CLEANUP_MAX_TOKEN_LEN = 12
+- CLEANUP_ALLOWED_PASSTHROUGH = { properNoun, number, date, currency, URL }
+- CLEANUP_MAX_STEPS = 2 (1 selective token pass + 1 full retry)
+
+**Flip Policy (One-Phone, capture-only)**
+- FLIP_POLICY = balanced (values: none | conservative | balanced)
+- FLIP_MARGIN = 0.30–0.35 for FLIP_DWELL_MS = 400–600
+- FLIP_MAX_PER_PHRASE = 1

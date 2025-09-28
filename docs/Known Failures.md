@@ -4,11 +4,13 @@
 
 **Late translations** → Peer early streaming + bailout (~8s); One‑Phone holds to commit.
 
-**Premature cutoff** → Stable ≥1.0–1.5s; density + growth checks; whitespace/punct dwell (K ms).
+**Premature cutoff** → S(Peer) Stable ≥1.0–1.5s; density + growth checks; whitespace/punct dwell (K ms). (One-Phone never speaks partials; cutoff only determines commit timing.)
 
 **Turn overlap at TTS end** → Single resume token; cancel before reuse.
 
-**Wrong-language (One‑Phone)** → Lock at commit; 2.0s next‑phrase retarget; one flip max; bias by last speaker.
+**Wrong-language (One‑Phone)** → Lock at commit; 2.0s next-phrase capture-only retarget; one flip max; bias by last speaker; apply the Purity Guard on the final output.
+
+**Hybrid output (EN+ES in one sentence)** → Apply Purity Guard (selective token repair then one full retry). Ensure passthrough whitelist excludes common pronouns/interjections.
 
 **Service swap race** → Single `captureIsActive`; idempotent start/stop; cancel timers first.
 

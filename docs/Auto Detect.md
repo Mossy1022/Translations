@@ -6,13 +6,17 @@
 - Stopword ratio (tiny lists per lang) → **+0.15** to winner.
 - Prior for continuing same speaker → **+0.20 / +0.10 / +0.05** decaying across consecutive phrases.
 
-**Lock & retarget**
-- Lock at **phrase commit**. **No flips** within phrase.
-- Next phrase: 2.0s **retarget window**, **max 1** flip, then freeze.
-- If confidence below threshold, stick to bias (last speaker).
+**Lock & retarget (capture-only; never affects mid-phrase audio)**
+
+- Lock language at phrase commit. No flips within a phrase.
+- Retarget window for the next phrase only: first ~2.0s of the new phrase may flip the STT locale once if early evidence strongly contradicts the bias. This improves recognition only; we still do not speak until that phrase commits.
+- Suggested thresholds (see Tunables.md):
+  - Flip when vote margin ≥ 0.30–0.35 for ≥ 400–600ms.
+  - Max flips/phrase = 1 
 
 **Code-switching & entities**
 - Entity passthrough: names, numbers, dates kept if ASR confidence low.
 
 **Acceptance**
 - Wrong-language commits: quiet ≤ **1%**, noisy café ≤ **3%**.
+- Note: Retarget affects STT accuracy only; final audio language is chosen at commit (never during partials).

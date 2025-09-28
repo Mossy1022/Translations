@@ -9,6 +9,7 @@ Idle → Capturing → Translating(partials) → Emitting(early-TTS/enqueue) →
 - **Interruption handling (lock-screen / phone call):**  
 On interruption: pause capture, set `hasFloor=false`, cancel resume timers.  
 On resume: `resumeCapture(previousTargetLang)` and rebuild the current **TurnContext**.
+Phrase queue (One-Phone): commits enqueue; TTS drains FIFO while capture continues; barge-in allowed at safe boundary when queue depth > 1 or enforce ≤150ms inter-gap.
 
 **Floor control**
 - `hasFloor = true` at TTS start; `false` at TTS finish + grace.
@@ -31,6 +32,7 @@ LANG_DECIDE(srcLang,conf)
 TTS_START(dstLang)
 TTS_END
 CAPTURE_RESUME(lang)
+LANG_PURIFY(start|done, pass=token|full, purity=0.62→0.94)
 ```
 
 ---
