@@ -1,6 +1,7 @@
 import Translation
 
 @available(iOS 26.0, *)
+@MainActor
 final class AppleOnDeviceTranslator {
   static let shared = AppleOnDeviceTranslator()
   private init() {}

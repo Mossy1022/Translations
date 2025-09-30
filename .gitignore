@@ -1,2 +1,5 @@
 build/
 Pods/
+# Xcode user-local files
+**/*.xcuserdata/
+**/*.xcuserdatad/

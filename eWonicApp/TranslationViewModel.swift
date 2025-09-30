@@ -23,6 +23,20 @@ final class TranslationViewModel: ObservableObject {
     case onePhone = "One Phone"
     case convention = "Convention"
   }
+    
+    // Debug queue HUD
+    struct DebugQ: Identifiable {
+      enum State { case queued, speaking, done }
+      let id: UUID
+      let text: String
+      var state: State
+      let timestamp: Date
+    }
+
+    @Published var debugMode: Bool = true           // toggle if you want
+    @Published var debugItems: [DebugQ] = []
+
+    
   @Published var mode: Mode = .peer
     
     private func sameBase(_ a: String, _ b: String) -> Bool {
@@ -46,6 +60,70 @@ final class TranslationViewModel: ObservableObject {
   @Published var hasAllPermissions       = false
   @Published var errorMessage: String?
     
+    // ─────────────────────────────── Convention tunables/state
+    private let conventionChunkSeconds: TimeInterval = 5.0
+    private var convContext: TurnContext?
+    
+    // how many characters of the current STT segment we’ve already committed
+    private var convCursor: Int = 0
+
+    // carry the last final text into the next segment to avoid re-speaking
+    private var convCarryPrefix: String = ""
+    
+    private let minConventionCommitChars = 12
+    
+    // Tail-stability buffer (last few partials within ~300ms)
+    private var recentPartials: [(text: String, at: Date)] = []
+    private var lastPartialAt: Date = .distantPast
+    private let tailStabilityWindow: TimeInterval = 0.30  // 300 ms
+    private let tailStabilityTokens = 3
+    
+    /// Return the last N tokens of a string (lowercased, punctuation stripped)
+    private func lastTokens(_ s: String, _ n: Int) -> [String] {
+      let t = s.lowercased()
+        .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .filter { !$0.isEmpty }
+      return Array(t.suffix(n))
+    }
+
+    /// True if the last few tokens have been the same across recent snapshots.
+    private func tailLooksStable(_ candidate: String, now: Date) -> Bool {
+      guard !candidate.isEmpty else { return false }
+      let tail = lastTokens(candidate, tailStabilityTokens)
+      guard !tail.isEmpty else { return false }
+
+      // Compare against snapshots in the recent window
+      let windowed = recentPartials.filter { now.timeIntervalSince($0.at) <= tailStabilityWindow }
+      if windowed.count < 2 { return false }  // need at least two points to confirm stability
+
+      return windowed.allSatisfy { snap in
+        lastTokens(snap.text, tailStabilityTokens) == tail
+      }
+    }
+
+    /// True if the final few tokens look like transient one-offs (guard against flickers).
+    /// For candidates ≥ 30 chars, if ≥ 3 of the last 5 tokens are hapax and there's no terminal punctuation, defer.
+    private func rareTailLooksSuspicious(_ s: String) -> Bool {
+      let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmed.count >= 30 else { return false }
+      if let last = trimmed.last, ".?!…。！？".contains(last) { return false }
+
+      let toks = lastTokens(trimmed, 5)
+      guard !toks.isEmpty else { return false }
+      var freq: [String: Int] = [:]
+      toks.forEach { freq[$0, default: 0] += 1 }
+      let hapaxCount = toks.filter { (freq[$0] ?? 0) == 1 }.count
+      return hapaxCount >= 3
+    }
+    
+    // longest common prefix length
+    private func commonPrefixCount(_ a: String, _ b: String) -> Int {
+      let ax = Array(a), bx = Array(b)
+      let n = min(ax.count, bx.count)
+      var i = 0
+      while i < n, ax[i] == bx[i] { i += 1 }
+      return i
+    }
     
     // Use early streaming in Peer and Convention (but not One-Phone).
     private var allowEarlyStreaming: Bool {
@@ -64,6 +142,13 @@ final class TranslationViewModel: ObservableObject {
     let name: String
     let code: String
   }
+    
+    private func cleanForPresentation(_ s: String) -> String {
+      collapseImmediateRepeats(
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
+          .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+      )
+    }
     
     // ─────────────────────────────── One-Phone offline auto state
     private var currentAutoLang: String = ""   // actual lang the native STT is using in One-Phone
@@ -90,7 +175,7 @@ final class TranslationViewModel: ObservableObject {
   private var pendingAutoLang: String?
 
   private var turnContext: TurnContext?
-  private var phraseQueue: [PhraseCommit] = []
+  public var phraseQueue: [PhraseCommit] = []
   private var phraseTranslations: [UUID: String] = [:]
   private var queueDraining = false
   private var activeCommitID: UUID?
@@ -99,6 +184,14 @@ final class TranslationViewModel: ObservableObject {
   private var hasFloor = false
   private var queueBargeDeadline = Date()
   private var nextContextBiasBase: String?
+    
+    // De-dup recently spoken texts (normalized) to avoid replays
+    private var spokenLRU: [String: Date] = [:]
+    private let spokenLRUWindow: TimeInterval = 8.0
+    private let spokenLRULimit = 32
+    
+    private var currentSpeakingID: UUID?
+
 
   private let phraseStableCutoff: TimeInterval = 1.3   // NOTE_TUNABLE (Tunables.md → stable cutoff)
   private let phraseStableJitter: TimeInterval = 0.2
@@ -179,6 +272,9 @@ final class TranslationViewModel: ObservableObject {
     private var earlyTTSTimer: DispatchSourceTimer?
     private var lastPartialForTurn = ""
 
+    private var ttsStartedAt: Date?
+
+    
     private func resetEarlyTTSState() {
       earlyTTSTimer?.cancel(); earlyTTSTimer = nil
       earlyTTSSentPrefix = 0
@@ -248,6 +344,29 @@ final class TranslationViewModel: ObservableObject {
       }
     }
 
+    
+    private func normalizedKey(_ s: String) -> String {
+      s.lowercased()
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    }
+
+    private func allowSpeakAndMark(_ text: String) -> Bool {
+      let key = normalizedKey(text)
+      let now = Date()
+      // purge old
+      spokenLRU = spokenLRU.filter { now.timeIntervalSince($0.value) <= spokenLRUWindow }
+      if spokenLRU.count > spokenLRULimit {
+        // drop oldest few
+        let drop = spokenLRU.sorted { $0.value < $1.value }.prefix(8).map { $0.key }
+        drop.forEach { spokenLRU.removeValue(forKey: $0) }
+      }
+      if let last = spokenLRU[key], now.timeIntervalSince(last) <= spokenLRUWindow {
+        return false
+      }
+      spokenLRU[key] = now
+      return true
+    }
 
     private func finalizePeerTurn(with final: String) {
       earlyTTSTimer?.cancel(); earlyTTSTimer = nil
@@ -296,57 +415,60 @@ final class TranslationViewModel: ObservableObject {
 
   // ─────────────────────────────── Init
     init() {
-      let initialLang = LanguageSettings.currentLanguage.rawValue
-      self.multipeerSession = MultipeerSession(localLanguage: initialLang)
+        let initialLang = LanguageSettings.currentLanguage.rawValue
+        self.multipeerSession = MultipeerSession(localLanguage: initialLang)
 
-      checkAllPermissions()
-      refreshVoices()
-      wireConnectionBadge()
-      wirePeerPipelines()
-      wireAutoPipelines()
-      wireOfflineOnePhonePipelines()
-      wirePeerPipelinesOffline()
-      wireMicPauseDuringPlayback()
+        checkAllPermissions()
+        refreshVoices()
+        wireConnectionBadge()
+        wirePeerPipelines()
+        wireAutoPipelines()
+        wireOfflineOnePhonePipelines()
+        wirePeerPipelinesOffline()
+        wireMicPauseDuringPlayback()
 
-      AudioSessionManager.shared.setInputGain(Float(micSensitivity))
-      ttsService.speech_rate = Float(playbackSpeed)
+        AudioSessionManager.shared.setInputGain(Float(micSensitivity))
+        ttsService.speech_rate = Float(playbackSpeed)
 
-      // Push selected voices into TTS preference registry
-      $voice_for_lang
-        .receive(on: RunLoop.main)
-        .sink { [weak self] mapping in
-          guard let self else { return }
-          for (lang, id) in mapping {
-            self.ttsService.setPreferredVoice(identifier: id, for: lang)
+        // Push selected voices into TTS preference registry
+        $voice_for_lang
+          .receive(on: RunLoop.main)
+          .sink { [weak self] mapping in
+            guard let self else { return }
+            for (lang, id) in mapping {
+              self.ttsService.setPreferredVoice(identifier: id, for: lang)
+            }
           }
-        }
-        .store(in: &cancellables)
+          .store(in: &cancellables)
 
         $micSensitivity
-            .receive(on: RunLoop.main)
-            .sink { [weak self] v in self?.nativeSTT.sensitivity = Float(v) }
-            .store(in: &cancellables)
-        
-      // All error banners feed into one place
-      multipeerSession.errorSubject
-        .merge(with:
-          (sttService as! AzureSpeechTranslationService).errorSubject,
-          autoService.errorSubject,
-          AudioSessionManager.shared.errorSubject
-        )
-        .receive(on: RunLoop.main)
-        .sink { [weak self] msg in self?.errorMessage = msg }
-        .store(in: &cancellables)
+          .receive(on: RunLoop.main)
+          .sink { [weak self] v in self?.nativeSTT.sensitivity = Float(v) }
+          .store(in: &cancellables)
 
-      // Switching to One Phone disables radios
-      $mode.removeDuplicates()
-        .sink { [weak self] m in if m == .onePhone { self?.multipeerSession.disconnect() } }
-        .store(in: &cancellables)
+        // All error banners feed into one place
+        multipeerSession.errorSubject
+          .merge(with:
+            (sttService as! AzureSpeechTranslationService).errorSubject,
+            autoService.errorSubject,
+            AudioSessionManager.shared.errorSubject
+          )
+          .receive(on: RunLoop.main)
+          .sink { [weak self] msg in self?.errorMessage = msg }
+          .store(in: &cancellables)
 
-      multipeerSession.onMessageReceived = { [weak self] msg in
-        self?.handleReceivedMessage(msg)
+        // 🔁 Disconnect radios whenever *not* in Peer mode (prevents stray Multipeer errors in Convention)
+        $mode.removeDuplicates()
+          .sink { [weak self] m in
+            guard let self else { return }
+            if m != .peer { self.multipeerSession.disconnect() }
+          }
+          .store(in: &cancellables)
+
+        multipeerSession.onMessageReceived = { [weak self] msg in
+          self?.handleReceivedMessage(msg)
+        }
       }
-    }
 
 
   // ─────────────────────────────── Permissions
@@ -407,8 +529,9 @@ final class TranslationViewModel: ObservableObject {
           resetEarlyTTSState()
           isProcessing = true
           peerSaidText = ""; translatedTextForMeToHear = ""
+          convCursor = 0                                // ← add this
           nativeSTT.startTranscribing(languageCode: peerLanguage)
-        } else {
+        }  else {
           guard !sttService.isListening else { return }
           resetEarlyTTSState()
           isProcessing = true
@@ -545,44 +668,40 @@ final class TranslationViewModel: ObservableObject {
     // TranslationViewModel.swift
     // ─────────────────────────────── Peer pipelines (iOS 26+ native STT → on-device MT)
     private func wirePeerPipelinesOffline() {
-        nativeSTT.partialResultSubject
-          .receive(on: RunLoop.main)
-          .removeDuplicates()
-          .throttle(for: .milliseconds(350), scheduler: RunLoop.main, latest: true)
-          .sink { [weak self] txt in
-            guard let self, self.mode != .onePhone else { return }
-            // show the live line locally; don’t emit to peer
-            self.translatedTextForMeToHear = txt
-          }
-          .store(in: &cancellables)
+      // Live native partials → show line only
+      nativeSTT.partialResultSubject
+        .receive(on: RunLoop.main)
+        .removeDuplicates()
+        .throttle(for: .milliseconds(350), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] txt in
+          guard let self, self.mode != .onePhone else { return }
+          self.translatedTextForMeToHear = txt
+        }
+        .store(in: &cancellables)
 
-        nativeSTT.finalResultSubject
-          .receive(on: RunLoop.main)
-          .sink { [weak self] raw in
-            guard let self, self.mode != .onePhone else { return }
-            self.isProcessing = false
-
-            let src = (self.mode == .peer) ? self.myLanguage : self.peerLanguage
-            let dst = (self.mode == .peer) ? self.peerLanguage : self.myLanguage
-
-            Task {
-              let finalTx = (try? await UnifiedTranslateService.translate(raw, from: src, to: dst)) ?? raw
-              await MainActor.run {
-                // ✅ push to peer now (final, reliable)
-                self.sendTextToPeer(finalTx, isFinal: true, reliable: true)
-
-                // keep local state / early-tts tail logic intact
-                self.finalizePeerTurn(with: finalTx)
-              }
-            }
-          }
-          .store(in: &cancellables)
-        
+      // Finals from native STT
       nativeSTT.finalResultSubject
         .receive(on: RunLoop.main)
         .sink { [weak self] raw in
           guard let self, self.mode != .onePhone else { return }
-          if self.mode == .peer { self.myTranscribedText = raw } else { self.peerSaidText = raw }
+          self.isProcessing = false
+
+          if self.mode == .peer {
+            // Peer path only (Convention handled elsewhere)
+            let src = self.myLanguage
+            let dst = self.peerLanguage
+            Task {
+              let finalTx = (try? await UnifiedTranslateService.translate(raw, from: src, to: dst)) ?? raw
+              await MainActor.run {
+                self.sendTextToPeer(finalTx, isFinal: true, reliable: true)
+                self.finalizePeerTurn(with: finalTx)
+                self.myTranscribedText = raw
+              }
+            }
+          } else {
+            // Convention: update raw line only; enqueue is handled by handleConventionStableBoundary/Partial
+              self.peerSaidText = cleanForPresentation(raw)
+          }
         }
         .store(in: &cancellables)
     }
@@ -655,20 +774,392 @@ final class TranslationViewModel: ObservableObject {
       .store(in:&cancellables)
   }
     
+    // ─────────────────────────────── Convention commit-on-interval
+    private func handleConventionPartial(_ snapshot: NativeSTTService.PartialSnapshot) {
+        guard mode == .convention, useOfflineOnePhone else { return }
+        
+        let full = snapshot.text
+        
+        print("[Convention] partial len=\(full.count) carry=\(convCarryPrefix.count) cursor=\(convCursor)")
+
+        translatedTextForMeToHear = full
+        
+        // keep recent partials for tail-stability check
+        lastPartialAt = snapshot.timestamp
+        recentPartials.append((text: full, at: snapshot.timestamp))
+        // keep only last ~6 items
+        if recentPartials.count > 6 { recentPartials.removeFirst(recentPartials.count - 6) }
+        
+        if convContext == nil {
+            var votes = LangVotes()
+            votes.biasToward(base: String(peerLanguage.prefix(2)))
+            convContext = TurnContext(
+                rollingText: "",
+                lockedSrcBase: String(peerLanguage.prefix(2)).lowercased(),
+                votes: votes,
+                startedAt: snapshot.timestamp,
+                lastGrowthAt: snapshot.timestamp,
+                committed: false,
+                flipUsed: true
+            )
+            // On a brand-new segment, assume we might see the previous final repeated at the front.
+            // Fast-forward cursor to that common prefix so we never re-speak it.
+            let carry = convCarryPrefix
+            if !carry.isEmpty {
+                convCursor = commonPrefixCount(full, carry)
+            } else {
+                convCursor = 0
+            }
+        }
+        
+        guard var ctx = convContext else { return }
+        ctx.update(with: full, now: snapshot.timestamp)
+        convContext = ctx
+        
+        // Safety clamp
+        if convCursor > full.count { convCursor = full.count }
+        
+        // Tail from the last committed character onward
+        let tailStart = full.index(full.startIndex, offsetBy: convCursor)
+        let tail = String(full[tailStart...])
+        
+        let elapsed = snapshot.timestamp.timeIntervalSince(ctx.startedAt)
+        if elapsed >= conventionChunkSeconds, !tail.isEmpty {
+            let speakerBase = String(peerLanguage.prefix(2)).lowercased()
+            if let (chunk, consumed) = conventionBestChunk(fromTail: tail,
+                                                           base: speakerBase,
+                                                           langCode: peerLanguage,
+                                                           loose: true) {          // ← loose for mid-speech
+                commitConventionPhrase(reason: "interval", finalText: chunk)
+                convCursor += consumed
+                print("[Convention] interval-commit consumed=\(consumed) newCursor=\(convCursor)")
+                
+                if !convCarryPrefix.isEmpty && convCursor >= convCarryPrefix.count {
+                    convCarryPrefix = ""
+                }
+                convContext = TurnContext(
+                    rollingText: full,
+                    lockedSrcBase: String(peerLanguage.prefix(2)).lowercased(),
+                    votes: LangVotes(),
+                    startedAt: Date(),
+                    lastGrowthAt: Date(),
+                    committed: false,
+                    flipUsed: true
+                )
+            }
+        }
+        // If the interval passed but we couldn't find a "complete" chunk,
+        // do a conservative commit at a nearby word boundary to keep audio flowing.
+        else if elapsed >= (conventionChunkSeconds * 1.7), !tail.isEmpty {
+          if let cut = lastWordBoundary(in: tail, fromOffset: max(0, tail.count - 80)) {
+            let candidate = String(tail[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if candidate.count >= minConventionCommitChars {
+              let cleaned = collapseImmediateRepeats(candidate)
+              commitConventionPhrase(reason: "intervalFallback", finalText: cleaned)
+              convCursor += candidate.count
+              print("[Convention] interval-commit FALLBACK consumed=\(candidate.count) newCursor=\(convCursor)")
+
+              // reset the interval window
+              convContext = TurnContext(
+                rollingText: full,
+                lockedSrcBase: String(peerLanguage.prefix(2)).lowercased(),
+                votes: LangVotes(),
+                startedAt: Date(),
+                lastGrowthAt: Date(),
+                committed: false,
+                flipUsed: true
+              )
+            }
+          }
+        }
+
+    }
+
+
+    private func handleConventionStableBoundary(_ boundary: NativeSTTService.StableBoundary) {
+      guard mode == .convention, useOfflineOnePhone else { return }
+
+      let full = boundary.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !full.isEmpty else { return }
+      print("[Convention] stable boundary fullLen=\(full.count) cursor=\(convCursor)")
+
+      if convCursor > full.count { convCursor = full.count }
+      let tailStart = full.index(full.startIndex, offsetBy: convCursor)
+      let tail = String(full[tailStart...])
+
+      if !tail.isEmpty {
+        let speakerBase = String(peerLanguage.prefix(2)).lowercased()
+        if let (chunk, consumed) = conventionBestChunk(fromTail: tail,
+                                                        base: speakerBase,
+                                                        langCode: peerLanguage,
+                                                        loose: false) {   // ← strict on stable/final
+           commitConventionPhrase(reason: boundary.reason, finalText: chunk)
+           convCursor += consumed
+           print("[Convention] stable-commit consumed=\(consumed) newCursor=\(convCursor)")
+         } else {
+           // existing finalTail fallback stays as-is
+           let cleaned = collapseImmediateRepeats(tail)
+           commitConventionPhrase(reason: "finalTail", finalText: cleaned)
+           convCursor = full.count
+           print("[Convention] stable-commit FALLBACK consumed=\(full.count) newCursor=\(convCursor)")
+         }
+      }
+
+      // Carry this final so we don’t re-speak it if OS repeats it
+      convCarryPrefix = full
+      let cap = 500
+      if convCarryPrefix.count > cap { convCarryPrefix = String(convCarryPrefix.suffix(cap)) }
+      print("[Convention] carryPrefix set len=\(convCarryPrefix.count)")
+
+      convContext = nil
+    }
+
+    private func conventionBestChunk(fromTail tail: String,
+                                     base: String,
+                                     langCode: String,
+                                     loose: Bool) -> (String, Int)? {
+      let raw = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !raw.isEmpty else { return nil }
+
+      func ok(_ s: String) -> Bool {
+        // In loose mode (interval), be permissive: only structural + length.
+        // In strict mode (stable/final), also require tail stability and rarity check.
+        let passStructure = isStructurallyComplete(s, base: base, langCode: langCode, minChars: minConventionCommitChars)
+        if loose { return passStructure }
+        return passStructure && tailLooksStable(s, now: lastPartialAt) && !rareTailLooksSuspicious(s)
+      }
+
+      // 1) Prefer a sentence boundary
+      if let cut = lastSentenceBoundary(in: raw, fromOffset: 0) {
+        let candidate = String(raw[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned   = collapseImmediateRepeats(candidate)
+        if ok(cleaned) { return (cleaned, candidate.count) }
+      }
+
+      // 2) Otherwise try a word boundary near the end (wider window)
+      if let cut = lastWordBoundary(in: raw, fromOffset: max(0, raw.count - 100)) {
+        let candidate = String(raw[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned   = collapseImmediateRepeats(candidate)
+        if ok(cleaned) { return (cleaned, candidate.count) }
+      }
+
+      // 3) Fallback: whole tail if it’s “complete enough”
+      let cleaned = collapseImmediateRepeats(raw)
+      if ok(cleaned) { return (cleaned, cleaned.count) }
+      return nil
+    }
+    
+    private func tokens(_ s: String) -> [String] {
+      s.lowercased()
+       .components(separatedBy: CharacterSet.alphanumerics.inverted)
+       .filter { !$0.isEmpty }
+    }
+
+    private func endsWithConnector(_ s: String, base: String) -> Bool {
+      let t = tokens(s)
+      guard let last = t.last else { return false }
+
+      // very small language-aware sets (not phrase-specific; just function words)
+      let connectorsEN: Set<String> = ["and","or","but","so","because","though","although",
+                                       "that","than","then","if","when","while",
+                                       "to","of","for","with","at","from","by","about","as"]
+      let connectorsES: Set<String> = ["y","o","pero","así","porque","aunque",
+                                       "que","si","cuando","mientras",
+                                       "a","de","por","con","en","para","como"]
+      let connectorsFR: Set<String> = ["et","ou","mais","donc","car","quoique","bienque",
+                                       "que","si","quand","lorsque","pendant",
+                                       "à","de","pour","avec","en","comme"]
+      let connectorsDE: Set<String> = ["und","oder","aber","denn","doch","obwohl",
+                                       "dass","wenn","als","während",
+                                       "zu","von","für","mit","bei","über","als","in","an"]
+
+      let base2 = String(base.prefix(2)).lowercased()
+      let set: Set<String>
+      switch base2 {
+        case "es": set = connectorsES
+        case "fr": set = connectorsFR
+        case "de": set = connectorsDE
+        default:   set = connectorsEN
+      }
+      return set.contains(last)
+    }
+
+    /// POS-lite: check there is at least one verb in the final span.
+    /// Uses NSLinguisticTagger so it works for EN/ES/FR/DE/etc without hardcoding words.
+    private func hasVerb(_ s: String, languageCode: String) -> Bool {
+      let tagger = NSLinguisticTagger(tagSchemes: [.lexicalClass], options: 0)
+      tagger.string = s
+      let range = NSRange(location: 0, length: (s as NSString).length)
+      var seenVerb = false
+      tagger.enumerateTags(in: range, unit: .word, scheme: .lexicalClass, options: [.omitPunctuation, .omitWhitespace]) { tag, _, _ in
+        if tag == .verb { seenVerb = true }
+      }
+      return seenVerb
+    }
+
+    /// If the tail *starts* with a subordinator (e.g. “even though / aunque / obwohl …”),
+    /// require that a verb appears somewhere in that same tail before we allow commit.
+    private func subordinatorOpensClause(_ s: String, base: String) -> Bool {
+      let t = tokens(s)
+      guard !t.isEmpty else { return false }
+      let w1 = t[0]
+      let w2 = t.count >= 2 ? t[1] : ""
+
+      let base2 = String(base.prefix(2)).lowercased()
+      switch base2 {
+      case "es":
+        return w1 == "aunque" || w1 == "si" || w1 == "cuando"
+      case "fr":
+        return (w1 == "bien" && w2 == "que") || w1 == "quoique" || w1 == "si"
+      case "de":
+        return w1 == "obwohl" || w1 == "wenn" || w1 == "als"
+      default: // en
+        return (w1 == "even" && w2 == "though") || w1 == "although" || w1 == "if"
+      }
+    }
+
+
+    /// Basic repetition cleaner: collapses immediate repeated tokens ("about about", "que que").
+    private func collapseImmediateRepeats(_ s: String) -> String {
+      let parts = s.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+      var out: [String] = []
+      for p in parts {
+        if out.last?.lowercased() == p.lowercased() { continue }
+        out.append(p)
+      }
+      // Rebuild minimally with single spaces; punctuation will be preserved by caller’s original string.
+      return out.joined(separator: " ")
+    }
+
+    /// Final structural gate applied to a candidate chunk.
+    /// Reject if too short, ends with connector, or opens a clause without a verb yet.
+    private func isStructurallyComplete(_ text: String, base: String, langCode: String, minChars: Int) -> Bool {
+      let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmed.count >= minChars else { return false }
+      if endsWithConnector(trimmed, base: base) { return false }
+
+      // If subordinator detected at the *start* of this piece, require a verb present
+      if subordinatorOpensClause(trimmed, base: base) && !hasVerb(trimmed, languageCode: langCode) {
+        return false
+      }
+      return true
+    }
+    // Light, language-aware clean-up before MT
+    private func normalizeNarration(_ s: String, base: String) -> String {
+      var out = collapseImmediateRepeats(s)
+
+      if base == "es" {
+        // collapse doubled function words
+        out = out.replacingOccurrences(of: #"\b(de|que|y|o|para|con|en|a)\s+\1\b"#,
+                                       with: "$1",
+                                       options: .regularExpression)
+        // “del el” → “del”
+        out = out.replacingOccurrences(of: #"\bdel\s+el\b"#, with: "del", options: .regularExpression)
+      }
+      return out
+    }
+
+
+    private func commitConventionPhrase(reason: String, finalText: String) {
+      // DROP_TINY: skip micro-utterances during mid-speech; allow at final tail.
+      if finalText.count < minConventionCommitChars && reason != "finalTail" {
+        logBreadcrumb("DROP_TINY(\(finalText.count))")
+        return
+      }
+
+      // Normalize the speaker’s narration (base = peerLanguage)
+      let speakerBase = String(peerLanguage.prefix(2)).lowercased()
+      let cleaned = normalizeNarration(
+        finalText.trimmingCharacters(in: .whitespacesAndNewlines),
+        base: speakerBase
+      )
+
+      // Speaker → me (peerLanguage → myLanguage)
+      let src = peerLanguage
+      let dst = myLanguage
+
+      let now = Date().timeIntervalSince1970
+      logBreadcrumb("PHRASE_COMMIT(\(cleaned.count))")
+      isProcessing = false
+
+      // De-dupe guard for near-identical quick repeats
+      guard allowSpeakAndMark(cleaned) else {
+        logBreadcrumb("DROP_DUP(\(cleaned.count))")
+        return
+      }
+
+      Task {
+        // Translate the cleaned phrase
+        let tx = (try? await UnifiedTranslateService.translate(cleaned, from: src, to: dst)) ?? cleaned
+        let txClean = tx.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        await MainActor.run {
+          // History
+          localTurns.append(LocalTurn(
+            sourceLang:   src,
+            sourceText:   cleaned,
+            targetLang:   dst,
+            translatedText: txClean,
+            timestamp:    now
+          ))
+
+          // UI
+          peerSaidText = cleaned
+          translatedTextForMeToHear = txClean
+
+          // Enqueue spoken text (translated)
+          let commit = PhraseCommit(
+            srcFull: src,
+            dstFull: dst,
+            raw:     txClean,
+            committedAt: now,
+            decidedAt:   now,
+            confidence:  1.0
+          )
+
+          // If somehow already speaking this exact id, don’t re-queue
+          if let cur = currentSpeakingID, cur == commit.id { return }
+
+          phraseQueue.append(commit)
+          phraseTranslations[commit.id] = txClean
+          queueBargeDeadline = Date().addingTimeInterval(phraseInterGapMax)
+
+          if phraseQueue.count >= 3 && ttsService.isSpeaking {
+            let ran = (ttsStartedAt != nil) ? Date().timeIntervalSince(ttsStartedAt!) : 0
+            if ran >= 0.7 { ttsService.stopAtBoundary() }
+          }
+          drainPhraseQueue()
+        }
+      }
+    }
+
+    
     // TranslationViewModel.swift
     private func wireOfflineOnePhonePipelines() {
+      // Partial snapshots from native STT (iOS 26)
       nativeSTT.partialSnapshotSubject
         .receive(on: RunLoop.main)
         .throttle(for: .milliseconds(200), scheduler: RunLoop.main, latest: true)
-        .sink { [weak self] snapshot in
-          self?.handleOnePhonePartial(snapshot)
+        .sink { [weak self] snap in
+          guard let self else { return }
+          switch self.mode {
+          case .onePhone:    self.handleOnePhonePartial(snap)
+          case .convention:  self.handleConventionPartial(snap)
+          case .peer:        break
+          }
         }
         .store(in: &cancellables)
 
+      // Stable boundaries / finals from native STT
       nativeSTT.stableBoundarySubject
         .receive(on: RunLoop.main)
         .sink { [weak self] boundary in
-          self?.handleStableBoundary(boundary)
+          guard let self else { return }
+          switch self.mode {
+          case .onePhone:    self.handleStableBoundary(boundary)
+          case .convention:  self.handleConventionStableBoundary(boundary)
+          case .peer:        break
+          }
         }
         .store(in: &cancellables)
 
@@ -676,8 +1167,12 @@ final class TranslationViewModel: ObservableObject {
         .receive(on: RunLoop.main)
         .sink { [weak self] raw in
           guard let self else { return }
-          let boundary = NativeSTTService.StableBoundary(text: raw, timestamp: Date(), reason: "finalTail")
-          self.handleStableBoundary(boundary)
+          let b = NativeSTTService.StableBoundary(text: raw, timestamp: Date(), reason: "finalTail")
+          switch self.mode {
+          case .onePhone:    self.handleStableBoundary(b)
+          case .convention:  self.handleConventionStableBoundary(b)
+          case .peer:        break
+          }
         }
         .store(in: &cancellables)
 
@@ -794,9 +1289,10 @@ final class TranslationViewModel: ObservableObject {
       fireHaptic(.phraseCommit)
       isProcessing = false
 
-      if phraseQueue.count > 1 && ttsService.isSpeaking {
-        ttsService.stopAtBoundary()
-      }
+        if phraseQueue.count >= 3 && ttsService.isSpeaking {
+          let ran = (ttsStartedAt != nil) ? Date().timeIntervalSince(ttsStartedAt!) : 0
+          if ran >= 0.7 { ttsService.stopAtBoundary() }
+        }
 
       translate(commit: commit)
       drainPhraseQueue()
@@ -821,22 +1317,26 @@ final class TranslationViewModel: ObservableObject {
     }
 
     private func registerTranslation(_ translation: String, for commit: PhraseCommit) {
-      phraseTranslations[commit.id] = translation
+      let translationClean = translation.trimmingCharacters(in: .whitespacesAndNewlines)
+      phraseTranslations[commit.id] = translationClean
 
+      // Append cleaned items to history
       localTurns.append(LocalTurn(
-        sourceLang: commit.srcFull,
-        sourceText: commit.raw,
-        targetLang: commit.dstFull,
-        translatedText: translation,
-        timestamp: Date().timeIntervalSince1970
+        sourceLang:     commit.srcFull,
+        sourceText:     commit.raw,          // commit.raw was set to the translated text in this flow
+        targetLang:     commit.dstFull,
+        translatedText: translationClean,
+        timestamp:      Date().timeIntervalSince1970
       ))
 
+      // Update visible lines
       let srcBase = String(commit.srcFull.prefix(2)).lowercased()
       if srcBase == String(myLanguage.prefix(2)).lowercased() {
         myTranscribedText = commit.raw
       } else {
         peerSaidText = commit.raw
       }
+      translatedTextForMeToHear = translationClean
 
       drainPhraseQueue()
     }
@@ -848,10 +1348,17 @@ final class TranslationViewModel: ObservableObject {
 
       queueDraining = true
       activeCommitID = next.id
+      currentSpeakingID = next.id
       activeTTSDestination = next.dstFull
       translatedTextForMeToHear = translation
       resumeAfterTTSTask?.cancel(); resumeAfterTTSTask = nil
       hasFloor = true
+
+      if let idx = debugItems.firstIndex(where: { $0.id == next.id }) {
+        debugItems[idx].state = .speaking
+      }
+
+      ttsStartedAt = Date()
       ttsService.speak(
         text: translation,
         languageCode: next.dstFull,
@@ -877,33 +1384,18 @@ final class TranslationViewModel: ObservableObject {
       queueDraining = false
       hasFloor = false
 
-      if !phraseQueue.isEmpty { phraseQueue.removeFirst() }
-      if let active = activeCommitID {
-        phraseTranslations[active] = nil
-      }
-      activeCommitID = nil
-
-      logBreadcrumb("TTS_END")
-      if let _ = activeTTSDestination {
-        let grace = routeAwareGrace()
-        resumeAfterTTSTask?.cancel()
-        resumeAfterTTSTask = Task { [weak self] in
-          try? await Task.sleep(nanoseconds: UInt64(grace * 1_000_000_000))
-          await MainActor.run {
-            guard let self else { return }
-            let resumeLang = self.pendingAutoLang ?? self.currentAutoLang
-            logBreadcrumb("CAPTURE_RESUME(\(resumeLang))")
-            self.fireHaptic(.captureResume)
-            self.drainPhraseQueue()
-            if let pending = self.pendingAutoLang {
-              self.restartAutoSTT(to: pending)
-              self.pendingAutoLang = nil
-            }
-          }
+      if !phraseQueue.isEmpty {
+        let finished = phraseQueue.removeFirst()
+        phraseTranslations[finished.id] = nil
+        if let idx = debugItems.firstIndex(where: { $0.id == finished.id }) {
+          debugItems[idx].state = .done
         }
       }
+      activeCommitID = nil
+      currentSpeakingID = nil
+      ttsStartedAt = nil
 
-      activeTTSDestination = nil
+      logBreadcrumb("TTS_END")
 
       if !phraseQueue.isEmpty {
         let delay = max(0, queueBargeDeadline.timeIntervalSinceNow)
@@ -912,6 +1404,7 @@ final class TranslationViewModel: ObservableObject {
         }
       }
     }
+
 
     private func prepareNextTurnContext(now: Date) {
       let bias = nextContextBiasBase ?? expectedBaseAfterResume ?? String(currentAutoLang.prefix(2)).lowercased()
@@ -1066,8 +1559,9 @@ final class TranslationViewModel: ObservableObject {
         .assign(to: &$connectionStatus)
     }
 
-    /// Pause/resume the *correct* capture path (Azure vs native) while device is speaking.
-    /// Pause/resume the *correct* capture path (Azure vs native) while device is speaking.
+    // TranslationViewModel.swift
+    // Pause/resume policy while device is speaking.
+    // Do NOT stop nativeSTT; we only gate emission via hasFloor/queue.
     private func wireMicPauseDuringPlayback() {
       ttsService.$isSpeaking
         .receive(on: RunLoop.main)
@@ -1076,21 +1570,24 @@ final class TranslationViewModel: ObservableObject {
           guard let self else { return }
 
           if speaking {
-            // Snapshot intent to resume: in Peer/Convention we always want hot-mic after TTS.
+            // Snapshot intent to resume only for Azure path
             wasListeningPrePlayback =
               (mode != .onePhone) || sttService.isListening || autoService.isListening || nativeSTT.isListening
 
-            // Pause whichever capture path is active.
-            if sttService.isListening { (sttService as! AzureSpeechTranslationService).stop() }
-            if autoService.isListening { autoService.stop() }
-            if nativeSTT.isListening  { nativeSTT.stopTranscribing() }
+            // Pause only online capture paths; keep native STT running.
+            if (sttService as! AzureSpeechTranslationService).isListening {
+              (sttService as! AzureSpeechTranslationService).stop()
+            }
+            if autoService.isListening {
+              autoService.stop()
+            }
+            // nativeSTT: do NOT stop; we want continuous capture per Audio Rules
 
           } else {
-            // If we didn’t intend to keep listening (e.g., user stopped), bail quietly.
             guard wasListeningPrePlayback else { isProcessing = false; return }
             wasListeningPrePlayback = false
 
-            // Let AVAudioSession settle, then re-open the right mic.
+            // Small grace applies to online paths only; native STT is already running.
             resumeAfterTTSTask?.cancel()
             resumeAfterTTSTask = Task { [weak self] in
               try? await Task.sleep(nanoseconds: 1_200_000_000) // 1.2s
@@ -1098,29 +1595,15 @@ final class TranslationViewModel: ObservableObject {
                 guard let self else { return }
                 switch mode {
                 case .peer:
-                  if useOfflinePeer {
-                      print("Peer STT: starting native recognizer \(myLanguage)")
-                    nativeSTT.startTranscribing(languageCode: myLanguage)
-                  } else {
+                  if !useOfflinePeer {
                     (sttService as! AzureSpeechTranslationService).start(src: myLanguage, dst: peerLanguage)
                   }
                 case .convention:
-                  if useOfflinePeer {
-                      print("Peer STT: starting native recognizer \(myLanguage)")
-                    nativeSTT.startTranscribing(languageCode: peerLanguage)
-                  } else {
+                  if !useOfflinePeer {
                     (sttService as! AzureSpeechTranslationService).start(src: peerLanguage, dst: myLanguage)
                   }
                 case .onePhone:
-                  if useOfflineOnePhone {
-                    let lang = pendingAutoLang ?? myLanguage
-                    pendingAutoLang = nil
-                    expectedBaseAfterResume = String(lang.prefix(2)).lowercased()
-                    retargetWindowActive = true
-                    retargetDeadline = Date().addingTimeInterval(2.0)
-                    nativeSTT.startTranscribing(languageCode: lang)
-                      print("Peer STT: starting native recognizer \(myLanguage)")
-                  } else {
+                  if !useOfflineOnePhone {
                     autoService.start(between: myLanguage, and: peerLanguage)
                   }
                 }
@@ -1131,6 +1614,7 @@ final class TranslationViewModel: ObservableObject {
         }
         .store(in: &cancellables)
     }
+
 
 
 
@@ -1254,13 +1738,28 @@ final class TranslationViewModel: ObservableObject {
         sendTextToPeer(text, isFinal: isFinal, reliable: isFinal)
 
       case .convention:
-        // speak locally (listener device)
-        // early chunks allowed when allowEarlyStreaming == true
-        ttsService.speak(
-          text: text,
-          languageCode: myLanguage,
-          voiceIdentifier: voice_for_lang[myLanguage]
+        // 🚦 Convention is phrase-commit only. Queue for local TTS (no partial TTS).
+        // Treat 'text' as already in myLanguage when we call from finalize paths.
+        let commit = PhraseCommit(
+          srcFull: peerLanguage,
+          dstFull: myLanguage,
+          raw: text,
+          committedAt: Date().timeIntervalSince1970,
+          decidedAt:   Date().timeIntervalSince1970,
+          confidence:  1.0
         )
+        phraseQueue.append(commit)
+          
+        phraseTranslations[commit.id] = text
+          
+        debugItems.append(DebugQ(id: commit.id, text: text, state: .queued, timestamp: Date()))
+
+        queueBargeDeadline = Date().addingTimeInterval(phraseInterGapMax)
+          if phraseQueue.count >= 3 && ttsService.isSpeaking {
+            let ran = (ttsStartedAt != nil) ? Date().timeIntervalSince(ttsStartedAt!) : 0
+            if ran >= 0.7 { ttsService.stopAtBoundary() }
+          }
+        drainPhraseQueue()
 
       case .onePhone:
         // finals-only unless you add streaming MT
@@ -1273,6 +1772,7 @@ final class TranslationViewModel: ObservableObject {
         }
       }
     }
+    
     private func sendTextToPeer(_ text: String, isFinal: Bool, reliable: Bool) {
       guard !text.isEmpty else { return }
 

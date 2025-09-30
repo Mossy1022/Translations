@@ -10,6 +10,7 @@ import SwiftUI
 struct ContentView: View {
   @StateObject private var view_model = TranslationViewModel()
 
+    
   var body: some View {
     NavigationView {
       ZStack {
@@ -81,6 +82,9 @@ struct ContentView: View {
         }
 
         ErrorBanner(message: $view_model.errorMessage)
+          DebugQueueHUD(vm: view_model)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .padding(.bottom, 56) // keep it above the system home bar
       }
       .navigationBarHidden(true)
     }
@@ -839,5 +843,45 @@ private struct MicButton: View {
                     in: Circle())
         .foregroundColor(.white)
     }
+  }
+}
+
+private struct DebugQueueHUD: View {
+  @ObservedObject var vm: TranslationViewModel
+  var body: some View {
+    if !vm.debugMode { return AnyView(EmptyView()) }
+    return AnyView(
+      VStack(alignment: .leading, spacing: 6) {
+        HStack {
+          Text("Queue: \(vm.phraseQueue.count)")
+            .font(.caption.weight(.bold))
+          Spacer()
+        }
+        ForEach(vm.debugItems.suffix(6)) { item in
+          HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(badge(item.state))
+              .font(.caption2.monospaced())
+              .padding(.horizontal, 6).padding(.vertical, 2)
+              .background(badgeColor(item.state).opacity(0.2))
+              .clipShape(Capsule())
+            Text(item.text)
+              .lineLimit(1)
+              .truncationMode(.tail)
+              .font(.caption2)
+          }
+        }
+      }
+      .padding(8)
+      .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+      .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15), lineWidth: 1))
+      .foregroundColor(.white)
+      .padding([.leading, .bottom], 12)
+    )
+  }
+  private func badge(_ s: TranslationViewModel.DebugQ.State) -> String {
+    switch s { case .queued: return "Q"; case .speaking: return "▶"; case .done: return "✓" }
+  }
+  private func badgeColor(_ s: TranslationViewModel.DebugQ.State) -> Color {
+    switch s { case .queued: return .yellow; case .speaking: return .blue; case .done: return .green }
   }
 }

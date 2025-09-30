@@ -62,6 +62,16 @@ final class NativeSTTService: NSObject, ObservableObject {
   private var recognitionTask:   SFSpeechRecognitionTask?
   private let audioEngine = AVAudioEngine()
     
+    // Debounce frantic re-rotates immediately after a restart
+    private var rotateCooldownUntil = Date.distantPast
+    private let rotateCooldown:    TimeInterval = 1.20    // was 0.80
+
+    // Tiny state log for silence/voice transitions (not per buffer spam)
+    private var wasSilent = true
+    
+    private var awaitingSilenceRotate = false   // prevents multiple rotate timers per segment
+    private let silenceRotateDelay: TimeInterval = 0.50   // was 0.35
+
   private var externallyQuiesced = false
 
   private var pendingSoftRotate: DispatchWorkItem?
@@ -74,7 +84,7 @@ final class NativeSTTService: NSObject, ObservableObject {
 
   private let maxSegmentSeconds: TimeInterval = 120
   private let silenceTimeout:    TimeInterval = 1.5
-  private let stableTimeout:     TimeInterval = 1.2
+  private let stableTimeout:     TimeInterval = 1.4
   private let noSpeechCode                    = 203   // Apple private
 
     
@@ -91,7 +101,6 @@ final class NativeSTTService: NSObject, ObservableObject {
   let stableBoundarySubject  = PassthroughSubject<StableBoundary, Never>()
   let errorSubject         = PassthroughSubject<STTError,Never>()   // only .unavailable emitted now
     
-
     public  let partialStream: AsyncStream<String>     // outward-facing
     private let partialContinuation: AsyncStream<String>.Continuation
     private var streamCancellable: AnyCancellable?
@@ -188,9 +197,8 @@ final class NativeSTTService: NSObject, ObservableObject {
     
     private var ignoreBuffers = false
 
-  // ───────────── Mic tap (unchanged behaviour) ─────────────
-    private func installTap() {
-      ignoreBuffers = false                 // ✅ make sure the tap is live
+  private func installTap() {
+      ignoreBuffers = false
       let node = audioEngine.inputNode
       let fmt  = node.outputFormat(forBus: 0)
       node.removeTap(onBus: 0)
@@ -200,17 +208,36 @@ final class NativeSTTService: NSObject, ObservableObject {
 
         let threshold: Float = 0.004 + (1.0 - sensitivity) * 0.012
         let energy = buf.rmsEnergy
+          
+      // Simple hysteresis: require energy to exceed threshold by a small margin when flipping to voice
+      let margin: Float = 0.0015
+      let voiceGate = threshold + margin
 
         if energy < threshold {
+          if !wasSilent { print("[NativeSTT] → silence"); wasSilent = true }
           if lastBufferHostTime != 0 {
             let now  = AVAudioTime.seconds(forHostTime: when.hostTime)
             let prev = AVAudioTime.seconds(forHostTime: lastBufferHostTime)
             if now - prev >= silenceTimeout {
               recognitionRequest?.endAudio()
-              ignoreBuffers = true          // end this segment; mic will reopen on rotate()
+              ignoreBuffers = true
+              if !awaitingSilenceRotate {
+                awaitingSilenceRotate = true
+                print("[NativeSTT] silence-end → schedule rotate in \(silenceRotateDelay)s")
+                DispatchQueue.main.asyncAfter(deadline: .now() + silenceRotateDelay) { [weak self] in
+                  guard let self else { return }
+                  if self.ignoreBuffers { self.rotate() }
+                }
+              }
             }
           }
           return
+        }
+
+        if wasSilent {
+            if energy < voiceGate { return }  // keep waiting until clearly over gate
+            print("[NativeSTT] → voice (rms=\(String(format: "%.4f", energy)))")
+            wasSilent = false
         }
 
         recognitionRequest?.append(buf)
@@ -226,6 +253,8 @@ final class NativeSTTService: NSObject, ObservableObject {
         errorSubject.send(.taskError(msg))
       }
     }
+
+
 
 
   private func removeTap() {
@@ -249,9 +278,12 @@ final class NativeSTTService: NSObject, ObservableObject {
       } else {
         print("[NativeSTT] on-device not supported for this locale; cloud dictation may be used by iOS")
       }
-
-      recognitionRequest?.shouldReportPartialResults = true
-
+        
+        recognitionRequest?.shouldReportPartialResults = true
+        if #available(iOS 13.0, *) {
+          recognitionRequest?.taskHint = .dictation
+        }
+        
       segmentStart = Date(); lastBufferHostTime = 0
       scheduleWatchdog()
 
@@ -278,6 +310,9 @@ final class NativeSTTService: NSObject, ObservableObject {
   // ───────────── Result / Error handlers ─────────────
     private func handle(result: SFSpeechRecognitionResult) {
         pendingSoftRotate?.cancel(); pendingSoftRotate = nil
+        awaitingSilenceRotate = false
+        
+
         Task { @MainActor in
             recognizedText = result.bestTranscription.formattedString
             let snapshot = PartialSnapshot(text: recognizedText, timestamp: Date())
@@ -296,6 +331,16 @@ final class NativeSTTService: NSObject, ObservableObject {
 
     private func handle(error e: NSError) {
       if externallyQuiesced { return }
+
+        awaitingSilenceRotate = false
+        
+        // If we *just* rotated, ignore one wave of 1110 to avoid churn
+        if Date() < rotateCooldownUntil,
+           e.domain == "kAFAssistantErrorDomain",
+           InternalErr.noSpeechCodes.contains(e.code) {
+          print("[NativeSTT] 1110 suppressed (cooldown)")
+          return
+        }
 
       print("[NativeSTT] DEBUG  domain=\(e.domain)  code=\(e.code)  desc=\(e.localizedDescription)")
 
@@ -340,14 +385,24 @@ final class NativeSTTService: NSObject, ObservableObject {
     }
     print("[NativeSTT] FINAL  – \(txt)")
     let boundary = StableBoundary(text: txt, timestamp: Date(), reason: "final")
+    awaitingSilenceRotate = false
     stableBoundarySubject.send(boundary)
     finalResultSubject.send(txt)
   }
 
     private func rotate() {
-      // Don’t rotate if we were intentionally quiesced (e.g., during TTS)
       guard !externallyQuiesced else { return }
+      awaitingSilenceRotate = false
+      rotateCooldownUntil = Date().addingTimeInterval(rotateCooldown)
+      print("[NativeSTT] rotate()  ignoreBuffers=\(ignoreBuffers)  isListening=\(isListening)  (cooldown \(rotateCooldown)s)")
+
       teardownTask()
+
+      // 🔧 fully refresh the input path to avoid zero-size buffers across route flips
+      removeTap()
+      do { audioEngine.reset() } catch { /* harmless */ }
+      installTap()
+
       ignoreBuffers = false
       lastBufferHostTime = 0
       spinUpTask()
