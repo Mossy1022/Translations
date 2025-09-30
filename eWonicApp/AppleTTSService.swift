@@ -29,6 +29,7 @@ final class AppleTTSService: NSObject, ObservableObject {
 
   @Published var isSpeaking = false
   let finishedSubject = PassthroughSubject<Void, Never>()
+  let startedSubject  = PassthroughSubject<Void, Never>()
 
   /// Map languageCode → preferred AVSpeech voice identifier
   private var preferred_voices: [String: String] = [:]
@@ -105,6 +106,10 @@ final class AppleTTSService: NSObject, ObservableObject {
     isSpeaking = false
   }
 
+  func stopAtBoundary() {
+    synthesizer.stopSpeaking(at: .word)
+  }
+
   // ─────────────────────────────────────────────
   // MARK: – Private helpers
   // ─────────────────────────────────────────────
@@ -179,6 +184,11 @@ private func clamp<T: Comparable>(_ value: T, min lower: T, max upper: T) -> T {
 // ─────────────────────────────────────────────
 
 extension AppleTTSService: AVSpeechSynthesizerDelegate {
+  func speechSynthesizer(_ s: AVSpeechSynthesizer, didStart _: AVSpeechUtterance) {
+    isSpeaking = true
+    startedSubject.send(())
+  }
+
   func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish _: AVSpeechUtterance) {
     isSpeaking = false
     AudioSessionManager.shared.end()

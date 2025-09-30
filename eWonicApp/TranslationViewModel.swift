@@ -10,6 +10,9 @@ import Foundation
 import Combine
 import Speech
 import AVFoundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 final class TranslationViewModel: ObservableObject {
@@ -77,14 +80,30 @@ final class TranslationViewModel: ObservableObject {
       return false
     }
     
-    private var expectedBaseAfterResume: String?  // “en” or “es” we *think* we’re hearing next
-    private var retargetWindowActive = false
-    private var retargetDeadline = Date()
+  private var expectedBaseAfterResume: String?  // “en” or “es” we *think* we’re hearing next
+  private var retargetWindowActive = false
+  private var retargetDeadline = Date()
 
-    // Add near other internals:
-    private var resumeAfterTTSTask: Task<Void, Never>?
-    // Which language STT should use next time we re-open in One-Phone mode
-    private var pendingAutoLang: String?
+  // Add near other internals:
+  private var resumeAfterTTSTask: Task<Void, Never>?
+  // Which language STT should use next time we re-open in One-Phone mode
+  private var pendingAutoLang: String?
+
+  private var turnContext: TurnContext?
+  private var phraseQueue: [PhraseCommit] = []
+  private var phraseTranslations: [UUID: String] = [:]
+  private var queueDraining = false
+  private var activeCommitID: UUID?
+  private var activeTTSDestination: String?
+  private var lastCommitAt: Date?
+  private var hasFloor = false
+  private var queueBargeDeadline = Date()
+  private var nextContextBiasBase: String?
+
+  private let phraseStableCutoff: TimeInterval = 1.3   // NOTE_TUNABLE (Tunables.md → stable cutoff)
+  private let phraseStableJitter: TimeInterval = 0.2
+  private let phraseLongSpeechCap: TimeInterval = 7.0   // NOTE_TUNABLE
+  private let phraseInterGapMax: TimeInterval = 0.15    // NOTE_TUNABLE
     
   let availableLanguages: [Language] = [
     .init(name:"English (US)",             code:"en-US"),
@@ -428,22 +447,43 @@ final class TranslationViewModel: ObservableObject {
       isAutoListening = true
       currentAutoLang = myLanguage
 
-      // Arm a short retarget window for the first partials
+      let now = Date()
+      var votes = LangVotes()
+      votes.biasToward(base: String(currentAutoLang.prefix(2)))
+      turnContext = TurnContext(
+        rollingText: "",
+        lockedSrcBase: nil,
+        votes: votes,
+        startedAt: now,
+        lastGrowthAt: now,
+        committed: false,
+        flipUsed: false
+      )
       expectedBaseAfterResume = String(currentAutoLang.prefix(2)).lowercased()
       retargetWindowActive = true
-      retargetDeadline = Date().addingTimeInterval(2.0)
+      retargetDeadline = now.addingTimeInterval(2.0)
+      logBreadcrumb("CAPTURE_START(\(currentAutoLang))")
+      fireHaptic(.captureStart)
 
       // Open mic
       nativeSTT.startTranscribing(languageCode: currentAutoLang)
       Log.d("OnePhone: start native STT @ \(currentAutoLang)")
     }
-    
+
     private func stopAutoOffline() {
       if nativeSTT.isListening { nativeSTT.stopTranscribing() }
       isAutoListening = false
       isProcessing = false
       retargetWindowActive = false
       expectedBaseAfterResume = nil
+      resumeAfterTTSTask?.cancel(); resumeAfterTTSTask = nil
+      turnContext = nil
+      phraseQueue.removeAll()
+      phraseTranslations.removeAll()
+      queueDraining = false
+      activeCommitID = nil
+      hasFloor = false
+      pendingAutoLang = nil
       Log.d("OnePhone: stop native STT")
     }
     
@@ -617,88 +657,304 @@ final class TranslationViewModel: ObservableObject {
     
     // TranslationViewModel.swift
     private func wireOfflineOnePhonePipelines() {
-      // PARTIALS → show live line & (optional) fast retarget
-      nativeSTT.partialResultSubject
+      nativeSTT.partialSnapshotSubject
         .receive(on: RunLoop.main)
-        .throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)
-        .sink { [weak self] raw in
-          guard let self, self.mode == .onePhone else { return }
-          self.translatedTextForMeToHear = raw
-
-          guard self.useOfflineOnePhone, self.retargetWindowActive else { return }
-          if Date() > self.retargetDeadline {
-            self.retargetWindowActive = false
-            self.expectedBaseAfterResume = nil
-            return
-          }
-          guard let guessBase = LanguageGuesser.base2(for: raw),
-                let expected  = self.expectedBaseAfterResume,
-                guessBase != expected else { return }
-
-          self.retargetWindowActive   = false
-          self.expectedBaseAfterResume = nil
-          let other = (guessBase == String(self.myLanguage.prefix(2)).lowercased())
-                    ? self.myLanguage : self.peerLanguage
-          self.nativeSTT.stopTranscribing()
-          Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            self.nativeSTT.startTranscribing(languageCode: other)
-          }
+        .throttle(for: .milliseconds(200), scheduler: RunLoop.main, latest: true)
+        .sink { [weak self] snapshot in
+          self?.handleOnePhonePartial(snapshot)
         }
         .store(in: &cancellables)
 
-      // FINALS → detect side, translate once, speak once (no duplicates)
+      nativeSTT.stableBoundarySubject
+        .receive(on: RunLoop.main)
+        .sink { [weak self] boundary in
+          self?.handleStableBoundary(boundary)
+        }
+        .store(in: &cancellables)
+
       nativeSTT.finalResultSubject
         .receive(on: RunLoop.main)
         .sink { [weak self] raw in
-          guard let self, self.mode == .onePhone else { return }
-          self.isProcessing = false
-
-          let myBase   = String(self.myLanguage.prefix(2)).lowercased()
-          let peerBase = String(self.peerLanguage.prefix(2)).lowercased()
-
-          let guess   = LanguageGuesser.base2(for: raw) ?? myBase
-          let srcFull = (guess == myBase) ? self.myLanguage : self.peerLanguage
-          let dstFull = (srcFull == self.myLanguage) ? self.peerLanguage : self.myLanguage
-
-          Task {
-            // Single translation pass (on-device on iOS 26)
-            let tx = (try? await UnifiedTranslateService.translate(raw, from: srcFull, to: dstFull)) ?? raw
-              await MainActor.run {
-                self.localTurns.append(LocalTurn(
-                  sourceLang: srcFull,
-                  sourceText: raw,
-                  targetLang: dstFull,
-                  translatedText: tx,
-                  timestamp: Date().timeIntervalSince1970
-                ))
-
-                self.translatedTextForMeToHear = tx
-                if srcFull == self.myLanguage { self.myTranscribedText = raw }
-                else                           { self.peerSaidText     = raw }
-
-                if !self.sameBase(srcFull, dstFull) {
-                  self.ttsService.speak(
-                    text: tx,
-                    languageCode: dstFull,
-                    voiceIdentifier: self.voice_for_lang[dstFull]
-                  )
-                }
-
-                // Bias the next listen to the other side and immediately re-open after TTS finishes.
-                self.pendingAutoLang = (srcFull == self.myLanguage) ? self.peerLanguage : self.myLanguage
-
-                // If TTS didn’t run (same base language), re-arm immediately.
-                if self.sameBase(srcFull, dstFull) {
-                  if !self.nativeSTT.isListening {
-                    self.nativeSTT.startTranscribing(languageCode: self.pendingAutoLang ?? self.myLanguage)
-                    self.pendingAutoLang = nil
-                  }
-                }
-              }
-          }
+          guard let self else { return }
+          let boundary = NativeSTTService.StableBoundary(text: raw, timestamp: Date(), reason: "finalTail")
+          self.handleStableBoundary(boundary)
         }
         .store(in: &cancellables)
+
+      ttsService.startedSubject
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.handleTTSStarted() }
+        .store(in: &cancellables)
+
+      ttsService.finishedSubject
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.handleTTSEnded() }
+        .store(in: &cancellables)
+    }
+
+    private func handleOnePhonePartial(_ snapshot: NativeSTTService.PartialSnapshot) {
+      guard mode == .onePhone, useOfflineOnePhone else { return }
+      translatedTextForMeToHear = snapshot.text
+
+      if turnContext == nil || (turnContext?.committed == true && snapshot.text != turnContext?.rollingText) {
+        prepareNextTurnContext(now: snapshot.timestamp)
+      }
+
+      guard var ctx = turnContext else { return }
+
+      if ctx.committed {
+        if snapshot.text == ctx.rollingText { return }
+        prepareNextTurnContext(now: snapshot.timestamp)
+        guard var fresh = turnContext else { return }
+        fresh.update(with: snapshot.text, now: snapshot.timestamp)
+        turnContext = fresh
+        ctx = fresh
+      } else {
+        ctx.update(with: snapshot.text, now: snapshot.timestamp)
+        turnContext = ctx
+      }
+
+      logBreadcrumb("PARTIAL(\(snapshot.text.count))")
+      evaluateRetargetIfNeeded(for: snapshot.text)
+
+      guard let active = turnContext else { return }
+      if shouldCommitDueToPunctuation(active.rollingText) {
+        commitCurrentPhrase(reason: "punctuation", finalText: active.rollingText)
+      } else if snapshot.timestamp.timeIntervalSince(active.startedAt) >= phraseLongSpeechCap {
+        commitCurrentPhrase(reason: "cap", finalText: active.rollingText)
+      }
+    }
+
+    private func handleStableBoundary(_ boundary: NativeSTTService.StableBoundary) {
+      guard mode == .onePhone, useOfflineOnePhone else { return }
+      guard let ctx = turnContext, !ctx.committed else { return }
+      if ctx.shouldDelayForTrailingConjunction() { return }
+      commitCurrentPhrase(reason: boundary.reason, finalText: boundary.text)
+    }
+
+    private func shouldCommitDueToPunctuation(_ text: String) -> Bool {
+      let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard let last = trimmed.last else { return false }
+      return [".", "?", "!"].contains(last)
+    }
+
+    private func evaluateRetargetIfNeeded(for partial: String) {
+      guard retargetWindowActive else { return }
+      if Date() > retargetDeadline { retargetWindowActive = false; expectedBaseAfterResume = nil; return }
+      guard var ctx = turnContext else { return }
+      guard !ctx.flipUsed else { return }
+      guard let guessBase = TranslationViewModel.guessBase2(partial) else { return }
+      guard let expected = expectedBaseAfterResume, guessBase != expected else { return }
+
+      ctx.flipUsed = true
+      turnContext = ctx
+      retargetWindowActive = false
+      expectedBaseAfterResume = guessBase
+      let other = (guessBase == String(myLanguage.prefix(2)).lowercased()) ? myLanguage : peerLanguage
+      restartAutoSTT(to: other)
+      logBreadcrumb("AUTO_FLIP(\(guessBase))")
+    }
+
+    private func commitCurrentPhrase(reason: String, finalText: String) {
+      guard var ctx = turnContext else { return }
+      guard !ctx.committed else { return }
+
+      let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmed.count > 1 else { return }
+
+      ctx.update(with: trimmed, now: Date())
+
+      let defaultBase = String(currentAutoLang.prefix(2)).lowercased()
+      let (decidedBase, confidence) = ctx.decidedBase(defaultBase: defaultBase)
+
+      let myBase = String(myLanguage.prefix(2)).lowercased()
+      let srcFull = (decidedBase == myBase) ? myLanguage : peerLanguage
+      let dstFull = (srcFull == myLanguage) ? peerLanguage : myLanguage
+
+      ctx.lock(base: decidedBase)
+      ctx.committed = true
+      turnContext = ctx
+
+      let now = Date()
+      let commit = PhraseCommit(
+        srcFull: srcFull,
+        dstFull: dstFull,
+        raw: trimmed,
+        committedAt: now.timeIntervalSince1970,
+        decidedAt: now.timeIntervalSince1970,
+        confidence: confidence
+      )
+
+      phraseQueue.append(commit)
+      queueBargeDeadline = Date().addingTimeInterval(phraseInterGapMax)
+      lastCommitAt = now
+      logBreadcrumb("PHRASE_COMMIT(\(trimmed.count))")
+      logBreadcrumb("LANG_DECIDE(\(srcFull),\(String(format: "%.2f", confidence)))")
+      logBreadcrumb("QUEUE_DEPTH(\(phraseQueue.count))")
+      fireHaptic(.phraseCommit)
+      isProcessing = false
+
+      if phraseQueue.count > 1 && ttsService.isSpeaking {
+        ttsService.stopAtBoundary()
+      }
+
+      translate(commit: commit)
+      drainPhraseQueue()
+
+      let nextBias = (decidedBase == myBase) ? String(peerLanguage.prefix(2)).lowercased()
+                                            : String(myLanguage.prefix(2)).lowercased()
+      pendingAutoLang = (srcFull == myLanguage) ? peerLanguage : myLanguage
+      nextContextBiasBase = nextBias
+      expectedBaseAfterResume = nextBias
+      retargetWindowActive = true
+      retargetDeadline = Date().addingTimeInterval(2.0)
+      turnContext = nil
+    }
+
+    private func translate(commit: PhraseCommit) {
+      Task {
+        let translated = (try? await UnifiedTranslateService.translate(commit.raw, from: commit.srcFull, to: commit.dstFull)) ?? commit.raw
+        await MainActor.run {
+          self.registerTranslation(translated, for: commit)
+        }
+      }
+    }
+
+    private func registerTranslation(_ translation: String, for commit: PhraseCommit) {
+      phraseTranslations[commit.id] = translation
+
+      localTurns.append(LocalTurn(
+        sourceLang: commit.srcFull,
+        sourceText: commit.raw,
+        targetLang: commit.dstFull,
+        translatedText: translation,
+        timestamp: Date().timeIntervalSince1970
+      ))
+
+      let srcBase = String(commit.srcFull.prefix(2)).lowercased()
+      if srcBase == String(myLanguage.prefix(2)).lowercased() {
+        myTranscribedText = commit.raw
+      } else {
+        peerSaidText = commit.raw
+      }
+
+      drainPhraseQueue()
+    }
+
+    private func drainPhraseQueue() {
+      guard !queueDraining else { return }
+      guard let next = phraseQueue.first else { return }
+      guard let translation = phraseTranslations[next.id] else { return }
+
+      queueDraining = true
+      activeCommitID = next.id
+      activeTTSDestination = next.dstFull
+      translatedTextForMeToHear = translation
+      resumeAfterTTSTask?.cancel(); resumeAfterTTSTask = nil
+      hasFloor = true
+      ttsService.speak(
+        text: translation,
+        languageCode: next.dstFull,
+        voiceIdentifier: voice_for_lang[next.dstFull]
+      )
+    }
+
+    private func handleTTSStarted() {
+      hasFloor = true
+      fireHaptic(.ttsStart)
+      if let dst = activeTTSDestination {
+        logBreadcrumb("TTS_START(\(dst))")
+      }
+      if let commitAt = lastCommitAt {
+        let latency = Date().timeIntervalSince(commitAt)
+        let ms = Int(latency * 1000)
+        logBreadcrumb("COMMIT_TO_TTS(\(ms))")
+      }
+    }
+
+    private func handleTTSEnded() {
+      fireHaptic(.ttsEnd)
+      queueDraining = false
+      hasFloor = false
+
+      if !phraseQueue.isEmpty { phraseQueue.removeFirst() }
+      if let active = activeCommitID {
+        phraseTranslations[active] = nil
+      }
+      activeCommitID = nil
+
+      logBreadcrumb("TTS_END")
+      if let _ = activeTTSDestination {
+        let grace = routeAwareGrace()
+        resumeAfterTTSTask?.cancel()
+        resumeAfterTTSTask = Task { [weak self] in
+          try? await Task.sleep(nanoseconds: UInt64(grace * 1_000_000_000))
+          await MainActor.run {
+            guard let self else { return }
+            let resumeLang = self.pendingAutoLang ?? self.currentAutoLang
+            logBreadcrumb("CAPTURE_RESUME(\(resumeLang))")
+            self.fireHaptic(.captureResume)
+            self.drainPhraseQueue()
+            if let pending = self.pendingAutoLang {
+              self.restartAutoSTT(to: pending)
+              self.pendingAutoLang = nil
+            }
+          }
+        }
+      }
+
+      activeTTSDestination = nil
+
+      if !phraseQueue.isEmpty {
+        let delay = max(0, queueBargeDeadline.timeIntervalSinceNow)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+          self?.drainPhraseQueue()
+        }
+      }
+    }
+
+    private func prepareNextTurnContext(now: Date) {
+      let bias = nextContextBiasBase ?? expectedBaseAfterResume ?? String(currentAutoLang.prefix(2)).lowercased()
+      var votes = LangVotes()
+      votes.biasToward(base: bias, weight: 0.5)
+      turnContext = TurnContext(
+        rollingText: "",
+        lockedSrcBase: nil,
+        votes: votes,
+        startedAt: now,
+        lastGrowthAt: now,
+        committed: false,
+        flipUsed: false
+      )
+      nextContextBiasBase = nil
+      expectedBaseAfterResume = bias
+      retargetWindowActive = true
+      retargetDeadline = now.addingTimeInterval(2.0)
+    }
+
+    private func routeAwareGrace() -> TimeInterval { 1.2 } // NOTE_TUNABLE baseline grace; route-aware variants in M3
+
+    private enum HapticEvent { case captureStart, phraseCommit, ttsStart, ttsEnd, captureResume }
+
+    private func fireHaptic(_ event: HapticEvent) {
+#if canImport(UIKit)
+      let style: UIImpactFeedbackGenerator.FeedbackStyle
+      switch event {
+      case .captureStart, .captureResume: style = .light
+      case .phraseCommit: style = .medium
+      case .ttsStart: style = .rigid
+      case .ttsEnd: style = .soft
+      }
+      UIImpactFeedbackGenerator(style: style).impactOccurred()
+#else
+      print("[HAPTIC] \(event)")
+#endif
+    }
+
+    private func logBreadcrumb(_ entry: String) {
+#if DEBUG
+      print("[Telemetry] \(entry)")
+#endif
     }
 
 
