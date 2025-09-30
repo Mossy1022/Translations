@@ -72,11 +72,8 @@ Here’s a ready-to-drop **AGENTS.md** tailored for ChatGPT Codex to build out t
 
 ## 3) Commands Palette (how Codex should “work”)
 
-Use these verbs in your plan/output; don’t actually run shell commands—describe changes as patch plans.
-
 * **READ_DOCS**: scan all Charter Pack docs under `docs/`.
-* **PATCH**: add/modify files; list functions/classes explicitly.
-* **ADD_TESTCASE**: dev‑only shims/flags under `#if DEBUG`.
+* **PATCH**: add/modify the appropriate files.
 * **RUN_CHECKS**: compile mentally; verify invariants + acceptance bars.
 * **NOTE_TUNABLE**: if constants change, update `docs/TUNABLES.md`.
 
