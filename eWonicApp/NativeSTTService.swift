@@ -45,6 +45,17 @@ private enum InternalErr {
 @MainActor
 final class NativeSTTService: NSObject, ObservableObject {
 
+  struct PartialSnapshot {
+    let text: String
+    let timestamp: Date
+  }
+
+  struct StableBoundary {
+    let text: String
+    let timestamp: Date
+    let reason: String
+  }
+
   // MARK: – Engine plumbing
   private var speechRecognizer: SFSpeechRecognizer?
   private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -76,6 +87,8 @@ final class NativeSTTService: NSObject, ObservableObject {
   // MARK: – Subjects (same names!)
   let partialResultSubject = PassthroughSubject<String,Never>()
   let finalResultSubject   = PassthroughSubject<String,Never>()
+  let partialSnapshotSubject = PassthroughSubject<PartialSnapshot, Never>()
+  let stableBoundarySubject  = PassthroughSubject<StableBoundary, Never>()
   let errorSubject         = PassthroughSubject<STTError,Never>()   // only .unavailable emitted now
     
 
@@ -267,7 +280,9 @@ final class NativeSTTService: NSObject, ObservableObject {
         pendingSoftRotate?.cancel(); pendingSoftRotate = nil
         Task { @MainActor in
             recognizedText = result.bestTranscription.formattedString
+            let snapshot = PartialSnapshot(text: recognizedText, timestamp: Date())
             partialResultSubject.send(recognizedText)
+            partialSnapshotSubject.send(snapshot)
             partialContinuation.yield(recognizedText)
             print("[NativeSTT] partial – \(recognizedText)")
             restartStableTimer()
@@ -324,6 +339,8 @@ final class NativeSTTService: NSObject, ObservableObject {
       return
     }
     print("[NativeSTT] FINAL  – \(txt)")
+    let boundary = StableBoundary(text: txt, timestamp: Date(), reason: "final")
+    stableBoundarySubject.send(boundary)
     finalResultSubject.send(txt)
   }
 
@@ -360,7 +377,11 @@ final class NativeSTTService: NSObject, ObservableObject {
     stableTimer?.schedule(deadline: .now() + stableTimeout)
     stableTimer?.setEventHandler { [weak self] in
       guard let self else { return }
-      if recognizedText == snap { emitFinal(); rotate() }
+      if recognizedText == snap {
+        let boundary = StableBoundary(text: snap, timestamp: Date(), reason: "stable")
+        stableBoundarySubject.send(boundary)
+        emitFinal(); rotate()
+      }
     }
     stableTimer?.resume()
   }
