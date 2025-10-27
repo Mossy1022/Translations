@@ -26,52 +26,58 @@ struct ContentView: View {
                             peer_count: view_model.multipeerSession.connectedPeers.count)
           }
 
-          if !view_model.hasAllPermissions {
-            Permission_card(msg: view_model.permissionStatusMessage) {
-              view_model.checkAllPermissions()
-            }
+            if !view_model.hasAllPermissions {
+              Permission_card(msg: view_model.permissionStatusMessage) {
+                view_model.checkAllPermissions()
+              }
 
-          } else if view_model.mode == .peer &&
-                    view_model.multipeerSession.connectionState != .connected {
+            } else if view_model.mode == .peer &&
+                      view_model.multipeerSession.connectionState != .connected {
 
-            PeerDiscoveryView(session: view_model.multipeerSession)
+              PeerDiscoveryView(session: view_model.multipeerSession)
 
-          } else if view_model.mode == .peer {
+            } else if view_model.mode == .peer {
 
-            // ───── Peer (unchanged main UI) ─────
-            Language_bar(my_lang:   $view_model.myLanguage,
-                         peer_lang: $view_model.peerLanguage,
-                         list:      view_model.availableLanguages,
-                         disabled:  view_model.isProcessing || view_model.captureIsActive)
+              // ───── Peer (unchanged main UI) ─────
+              Language_bar(my_lang:   $view_model.myLanguage,
+                           peer_lang: $view_model.peerLanguage,
+                           list:      view_model.availableLanguages,
+                           disabled:  view_model.isProcessing || view_model.captureIsActive)
 
-            Voice_bar(voice_for_lang: $view_model.voice_for_lang,
-                      voices:        view_model.availableVoices)
+              Voice_bar(voice_for_lang: $view_model.voice_for_lang,
+                        voices:        view_model.availableVoices)
 
-            Conversation_scroll(my_text:  view_model.myTranscribedText,
-                                peer_label: "Peer".localized,
-                                peer_text: view_model.peerSaidText,
-                                translated: view_model.translatedTextForMeToHear)
+              Conversation_scroll(my_text:  view_model.myTranscribedText,
+                                  peer_label: "Peer".localized,
+                                  peer_text: view_model.peerSaidText,
+                                  translated: view_model.translatedTextForMeToHear)
 
-            Settings_sliders(mic: $view_model.micSensitivity,
-                             speed: $view_model.playbackSpeed)
+              Settings_sliders(mic: $view_model.micSensitivity,
+                               speed: $view_model.playbackSpeed)
 
               Record_button(is_listening:  view_model.captureIsActive,
                             is_processing: view_model.isProcessing,
                             start_action:  view_model.startListening,
                             stop_action:   view_model.stopListening)
 
+              Button("Clear History".localized) { view_model.resetConversationHistory() }
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.7))
+                .padding(.top, 4)
 
-            Button("Clear History".localized) { view_model.resetConversationHistory() }
-              .font(.caption)
-              .foregroundColor(.white.opacity(0.7))
-              .padding(.top, 4)
+            } else if view_model.mode == .convention &&
+                      view_model.multipeerSession.connectionState != .connected {
 
-          } else if view_model.mode == .convention {
-            ConventionScreen(vm: view_model)
-          } else {
-            // ───── One‑Phone Conversation ─────
-            OnePhoneConversationScreen(vm: view_model)
-          }
+              ConventionDiscoveryView(vm: view_model)
+
+            } else if view_model.mode == .convention {
+
+              ConventionScreen(vm: view_model)
+
+            } else {
+              // ───── One-Phone Conversation ─────
+              OnePhoneConversationScreen(vm: view_model)
+            }
 
           Spacer(minLength: 0)
         }
@@ -466,22 +472,19 @@ private struct Record_button: View {
   let start_action: () -> Void
   let stop_action: () -> Void
   var body: some View {
-    Button { is_listening ? stop_action() : start_action() } label: {
-      HStack {
-        if is_processing { ProgressView().progressViewStyle(.circular) }
-        Image(systemName: is_listening ? "stop.fill" : "mic.fill")
-        Text(is_listening ? "Stop".localized
-                          : (is_processing ? "Processing…".localized : "Start".localized))
+      Button { is_listening ? stop_action() : start_action() } label: {
+        HStack {
+          Image(systemName: is_listening ? "stop.fill" : "mic.fill")
+          Text(is_listening ? "Stop".localized : "Start".localized)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(is_listening ? Color.red : EwonicTheme.accent,
+                    in: RoundedRectangle(cornerRadius: 14))
+        .foregroundColor(.white)
+        .font(.headline)
+        .contentShape(Rectangle())
       }
-      .frame(maxWidth: .infinity)
-      .padding()
-      .background(is_listening ? Color.red :
-                    (is_processing ? Color.orange : EwonicTheme.accent),
-                  in: RoundedRectangle(cornerRadius: 14))
-      .foregroundColor(.white)
-      .font(.headline)
-    }
-    .disabled(is_processing && !is_listening)
   }
 }
 
@@ -581,32 +584,119 @@ private struct ErrorBanner: View {
   }
 }
 
+private struct ConventionDiscoveryView: View {
+  @ObservedObject var vm: TranslationViewModel
+
+  var body: some View {
+    VStack(spacing: 18) {
+      Text("Start a Convention session".localized)
+        .font(.title2.weight(.semibold))
+
+      HStack(spacing: 20) {
+        Button {
+          vm.multipeerSession.stopBrowsing()
+          vm.multipeerSession.startHosting()
+          vm.isConventionHost = true
+          vm.multipeerSession.updateMode("convention", isHost: true)   // Host button
+        } label: {
+          Label("Host (one-to-many)".localized, systemImage: "antenna.radiowaves.left.and.right")
+            .frame(maxWidth: .infinity)
+            .padding()
+        }
+        .background(EwonicTheme.accent.opacity(0.25),
+                    in: RoundedRectangle(cornerRadius: 10))
+
+        Button {
+          vm.multipeerSession.stopHosting()
+          vm.multipeerSession.startBrowsing()
+          vm.isConventionHost = false
+          vm.multipeerSession.updateMode("convention", isHost: false)  // Join button
+        } label: {
+          Label("Join as Listener".localized, systemImage: "ear")
+            .frame(maxWidth: .infinity)
+            .padding()
+        }
+        .background(Color.cyan.opacity(0.25),
+                    in: RoundedRectangle(cornerRadius: 10))
+      }
+      .buttonStyle(.plain)
+
+      if !vm.multipeerSession.discoveredPeers.isEmpty {
+        Text("Found Hosts:".localized).font(.headline)
+        List(vm.multipeerSession.discoveredPeers, id: \.self) { peer in
+          Button(peer.displayName) { vm.multipeerSession.invitePeer(peer) }
+            .listRowBackground(Color.clear)
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .frame(maxHeight: 220)
+
+      } else if vm.multipeerSession.isBrowsing || vm.multipeerSession.isAdvertising {
+        HStack {
+          ProgressView()
+          Text(vm.multipeerSession.isBrowsing ? "Searching…".localized : "Waiting…".localized)
+        }
+        .foregroundColor(.white.opacity(0.7))
+      }
+
+      if vm.multipeerSession.connectionState != .notConnected ||
+         vm.multipeerSession.isBrowsing || vm.multipeerSession.isAdvertising {
+        Button("Stop Activities".localized) { vm.multipeerSession.disconnect() }
+          .padding(.top, 8)
+          .buttonStyle(.bordered)
+          .tint(.red)
+      }
+    }
+    .padding()
+    .background(Color.white.opacity(0.05),
+                in: RoundedRectangle(cornerRadius: 14))
+    .foregroundColor(.white)
+  }
+}
 
 
 private struct ConventionScreen: View {
   @ObservedObject var vm: TranslationViewModel
 
   var body: some View {
-    Convention_language_bar(my_lang: $vm.myLanguage,
-                            speaker_lang: $vm.peerLanguage,
-                            list: vm.availableLanguages,
-                            disabled: vm.isProcessing || vm.captureIsActive)
+    // Host: selects Speaker(lang) and their own Hear(lang)
+    // Listener: only selects "I Hear"
+    if vm.isConventionHost {
+      Convention_language_bar(my_lang: $vm.myLanguage,
+                              speaker_lang: $vm.peerLanguage,
+                              list: vm.availableLanguages,
+                              disabled: vm.isProcessing || vm.captureIsActive)
+    } else {
+      HStack(spacing: 12) {
+        Lang_menu(label: "I Hear", code: $vm.myLanguage, list: vm.availableLanguages)
+      }
+      .opacity((vm.isProcessing || vm.captureIsActive) ? 0.55 : 1)
+    }
 
     Voice_bar(voice_for_lang: $vm.voice_for_lang,
               voices:        vm.availableVoices)
 
-    Conversation_scroll(my_text: "",
-                        peer_label: "Speaker".localized,
+    Conversation_scroll(my_text: vm.isConventionHost ? "" : vm.myTranscribedText,
+                        peer_label: vm.isConventionHost ? "Speaker".localized : "Speaker".localized,
                         peer_text: vm.peerSaidText,
                         translated: vm.translatedTextForMeToHear)
 
     Settings_sliders(mic: $vm.micSensitivity,
                      speed: $vm.playbackSpeed)
+      .opacity(vm.isConventionHost ? 1 : 1) // keep speed for listeners too
 
-    Record_button(is_listening:  vm.captureIsActive,
-                  is_processing: vm.isProcessing,
-                  start_action:  vm.startListening,
-                  stop_action:   vm.stopListening)
+    if vm.isConventionHost {
+      Record_button(is_listening:  vm.captureIsActive,
+                    is_processing: vm.isProcessing,
+                    start_action:  vm.startListening,
+                    stop_action:   vm.stopListening)
+    } else {
+      // Listener hint, no mic button
+      Text("Listening (one-to-many)".localized)
+        .font(.footnote.weight(.semibold))
+        .foregroundColor(.white.opacity(0.7))
+        .padding(.top, 4)
+    }
 
     Button("Clear History".localized) { vm.resetConversationHistory() }
       .font(.caption)

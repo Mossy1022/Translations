@@ -27,23 +27,32 @@ final class AudioSessionManager {
                 mode: .voiceChat,
                 options: [
                     .defaultToSpeaker,
-                    .allowBluetooth,
-                    .allowBluetoothA2DP,
+                    .allowBluetoothHFP,
                     .mixWithOthers,
                     .allowAirPlay
                 ])
+            // Prefer sane I/O defaults up front (some routes will refine these later).
+            try? session.setPreferredSampleRate(48_000)           // common HW rate on iOS
+            try? session.setPreferredIOBufferDuration(0.0232)     // ~23ms is a good streaming target
+            try? session.setPreferredInputNumberOfChannels(1)     // mono voice capture
         } catch {
             let msg = "Audio session category failed: \(error.localizedDescription)"
             print("❌ \(msg)")
             errorSubject.send(msg)
         }
     }
+
     
+    /// Enter full-duplex mode (idempotent).
     /// Enter full-duplex mode (idempotent).
     func begin() {
         if ref_count == 0 {
             do {
                 try session.setActive(true, options: [.notifyOthersOnDeactivation])
+                // Re-assert I/O prefs *after* activation — some routes reset them on activate.
+                try? session.setPreferredSampleRate(48_000)
+                try? session.setPreferredIOBufferDuration(0.0232)
+                try? session.setPreferredInputNumberOfChannels(1)
             } catch {
                 let msg = "Audio session activate failed: \(error.localizedDescription)"
                 print("❌ \(msg)")
@@ -52,6 +61,7 @@ final class AudioSessionManager {
         }
         ref_count += 1
     }
+
     
     func end() {
         guard ref_count > 0 else { return }
@@ -59,9 +69,9 @@ final class AudioSessionManager {
         if ref_count == 0 {
             do {
                 try session.setActive(false, options: [.notifyOthersOnDeactivation])
-            }  catch let err as NSError {
+            } catch let err as NSError {
                 if let code = AVAudioSession.ErrorCode(rawValue: err.code), code == .isBusy {
-                    // benign – mic or speaker still shutting down
+                    // benign – mic or speaker still shutting down; let the next renter win
                     print("⚠️ Audio session still active; skipping deactivate")
                 } else {
                     let msg = "Audio session deactivate failed: \(err.localizedDescription)"
@@ -71,6 +81,7 @@ final class AudioSessionManager {
             }
         }
     }
+
 
     /// Adjust microphone sensitivity (0.0 – 1.0).
     func setInputGain(_ value: Float) {
@@ -84,4 +95,14 @@ final class AudioSessionManager {
             errorSubject.send(msg)
         }
     }
+
+}
+
+extension AudioSessionManager {
+  var inputIsBluetooth: Bool {
+    let inputs = session.currentRoute.inputs
+    return inputs.contains { port in
+      port.portType == .bluetoothHFP || port.portType == .bluetoothLE
+    }
+  }
 }

@@ -37,6 +37,7 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
 
   let partialResult     = PassthroughSubject<String,Never>() // live streaming
   let finalResult       = PassthroughSubject<String,Never>() // translated sentence
+  let sourcePartialResult = PassthroughSubject<String,Never>()
   let sourceFinalResult = PassthroughSubject<String,Never>() // raw sentence
   let audioChunk        = PassthroughSubject<Data,  Never>() // (unused)
   let errorSubject      = PassthroughSubject<String,Never>()
@@ -132,15 +133,26 @@ final class AzureSpeechTranslationService: NSObject, ObservableObject {
   private func hookEvents() {
 
     // Live partial translation tokens
-    recognizer!.addRecognizingEventHandler { [weak self] _, ev in
-      guard let self,
-            let txt = ev.result.translations[self.dst_lang_2] as? String
-      else { return }
-      DispatchQueue.main.async {
-        self.partialResult.send(txt)
-        self.partialStreamCont.yield(txt)
+      recognizer!.addRecognizingEventHandler { [weak self] _, ev in
+        guard let self else { return }
+
+        // RAW partial (speaker language)
+        let raw = (ev.result.text ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.isEmpty {
+          DispatchQueue.main.async {
+            self.sourcePartialResult.send(raw)
+          }
+        }
+
+        // Translated partial (current dst_lang_2) — unchanged behavior
+        if let txt = ev.result.translations[self.dst_lang_2] as? String, !txt.isEmpty {
+          DispatchQueue.main.async {
+            self.partialResult.send(txt)
+            self.partialStreamCont.yield(txt)
+          }
+        }
       }
-    }
 
       // Final sentence
       recognizer!.addRecognizedEventHandler { [weak self] _, ev in

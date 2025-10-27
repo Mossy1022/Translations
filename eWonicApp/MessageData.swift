@@ -8,10 +8,12 @@
 import Foundation
 
 struct MessageData: Codable {
-    let id: UUID
-    let originalText: String
-    let sourceLanguageCode: String // Speaker's language, e.g., "en-US" (BCP-47)
-    let targetLanguageCode: String? // Optional; unused when broadcasting to many peers
-    let isFinal: Bool            // true if final transcript
-    let timestamp: TimeInterval
+  let id: UUID
+  let turnId: UUID?        // optional; same for all chunks in a “turn”
+  let seq: Int?            // optional; 0,1,2… within a turn
+  let originalText: String // RAW text as spoken by sender
+  let sourceLanguageCode: String // BCP-47 of the SPEAKER (e.g., "en-US")
+  let isFinal: Bool
+  let timestamp: TimeInterval
+  let mode: String?        // "peer" or "convention" (optional hint)
 }

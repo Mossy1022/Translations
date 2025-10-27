@@ -30,6 +30,9 @@ final class AppleTTSService: NSObject, ObservableObject {
   @Published var isSpeaking = false
   let finishedSubject = PassthroughSubject<Void, Never>()
   let startedSubject  = PassthroughSubject<Void, Never>()
+    private var lastSignature: String?
+    private var lastSpeakAt: Date = .distantPast
+
 
   /// Map languageCode → preferred AVSpeech voice identifier
   private var preferred_voices: [String: String] = [:]
@@ -56,6 +59,16 @@ final class AppleTTSService: NSObject, ObservableObject {
     voiceIdentifier: String? = nil
   ) {
     guard !text.isEmpty else { return }
+      
+      let sig = "\(languageCode)|\(voiceIdentifier ?? "auto")|\(text)"
+      let now = Date()
+      if let last = lastSignature, now.timeIntervalSince(lastSpeakAt) < 0.15, last == sig {
+        print("[TTS] debounce duplicate speak (≤150ms) – skipping")
+        return
+      }
+      lastSignature = sig
+      lastSpeakAt = now
+
 
     AudioSessionManager.shared.begin()
 
@@ -185,6 +198,7 @@ private func clamp<T: Comparable>(_ value: T, min lower: T, max upper: T) -> T {
 
 extension AppleTTSService: AVSpeechSynthesizerDelegate {
   func speechSynthesizer(_ s: AVSpeechSynthesizer, didStart _: AVSpeechUtterance) {
+      print("[TTS] didStart")
     isSpeaking = true
     startedSubject.send(())
   }

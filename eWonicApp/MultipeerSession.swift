@@ -11,6 +11,9 @@ private let isIOS26Plus = osMajor >= 26
 private let log = Logger(subsystem: "com.evansoasis.ewonic",
                          category: "multipeer")
 
+enum WireMode: String { case peer, convention } // internal (default)
+
+
 final class MultipeerSession: NSObject, ObservableObject {
 
   // ────────────────────────────── Public state
@@ -26,11 +29,20 @@ final class MultipeerSession: NSObject, ObservableObject {
 
   @Published private(set) var peerOfflineCapable: [MCPeerID: Bool] = [:]
     
+@Published var wireMode: WireMode = .peer              // what this device is advertising
+@Published var isHost: Bool = false                    // host (true) vs listener (false) in Convention
+
+@Published private(set) var peerModes : [MCPeerID:String] = [:]   // "peer" | "convention"
+@Published private(set) var peerRoles : [MCPeerID:String] = [:]   // "host" | "listener"
+    
   // ────────────────────────────── MC plumbing
   private let myPeerID = MCPeerID(displayName: UIDevice.current.name)
   private var localLanguage: String
 
-  private lazy var session: MCSession = {
+    
+  private var session: MCSession
+
+  private func makeSession() -> MCSession {
     let s = MCSession(
       peer:               myPeerID,
       securityIdentity:   nil,
@@ -38,7 +50,7 @@ final class MultipeerSession: NSObject, ObservableObject {
     )
     s.delegate = self
     return s
-  }()
+  }
 
   private var advertiser: MCNearbyServiceAdvertiser
   private var browser   : MCNearbyServiceBrowser
@@ -50,27 +62,35 @@ final class MultipeerSession: NSObject, ObservableObject {
   // ────────────────────────────── Life‑cycle
   init(localLanguage: String) {
     self.localLanguage = localLanguage
-      // In init(localLanguage:) replace advertiser construction:
-      self.advertiser = MCNearbyServiceAdvertiser(
-        peer: myPeerID,
-        discoveryInfo: [
-          "lang": localLanguage,
-          "o26": isIOS26Plus ? "1" : "0"
-        ],
-        serviceType: SERVICE_TYPE)
 
-      // And in updateLocalLanguage(_:) mirror that dictionary:
-      advertiser = MCNearbyServiceAdvertiser(
-        peer: myPeerID,
-        discoveryInfo: [
-          "lang": localLanguage,
-          "o26": isIOS26Plus ? "1" : "0"
-        ],
-        serviceType: SERVICE_TYPE)
+      // ✅ Build discoveryInfo without using `self`
+       let initialInfo: [String:String] = [
+         "lang": localLanguage,
+         "o26":  isIOS26Plus ? "1" : "0",
+         "mode": WireMode.peer.rawValue,
+         "role": "peer"
+       ]
+
+
+      self.advertiser = MCNearbyServiceAdvertiser(
+         peer: myPeerID,
+         discoveryInfo: initialInfo,
+         serviceType: SERVICE_TYPE
+       )
+
     self.browser = MCNearbyServiceBrowser(
       peer: myPeerID,
       serviceType: SERVICE_TYPE)
+
+    // Initialize session
+    self.session = MCSession(
+      peer: myPeerID,
+      securityIdentity: nil,
+      encryptionPreference: .optional
+    )
+
     super.init()
+    session.delegate = self
     advertiser.delegate = self
     browser.delegate    = self
   }
@@ -85,13 +105,9 @@ final class MultipeerSession: NSObject, ObservableObject {
         let wasAdvertising = isAdvertising
         advertiser.stopAdvertisingPeer()
 
-        // ⬇️ Mirror initial discovery info, including offline capability flag
         advertiser = MCNearbyServiceAdvertiser(
           peer: myPeerID,
-          discoveryInfo: [
-            "lang": lang,
-            "o26": isIOS26Plus ? "1" : "0"
-          ],
+          discoveryInfo: makeDiscoveryInfo(),
           serviceType: SERVICE_TYPE
         )
         advertiser.delegate = self
@@ -136,6 +152,27 @@ final class MultipeerSession: NSObject, ObservableObject {
     }
   }
     
+    func updateMode(_ mode: String, isHost: Bool) {
+      mpq.async { [self] in
+        guard let newMode = WireMode(rawValue: mode) else { return }
+        let modeChanged = (newMode != wireMode) || (self.isHost != isHost)
+        guard modeChanged else { return }
+
+        wireMode = newMode
+        self.isHost = isHost
+
+        let wasAdvertising = isAdvertising
+        advertiser.stopAdvertisingPeer()
+        advertiser = MCNearbyServiceAdvertiser(
+          peer: myPeerID,
+          discoveryInfo: makeDiscoveryInfo(),
+          serviceType: SERVICE_TYPE
+        )
+        advertiser.delegate = self
+        if wasAdvertising { advertiser.startAdvertisingPeer() }
+      }
+    }
+    
     // ────────────────────────────── Messaging
     func send(message: MessageData, reliable: Bool = true) {
       mpq.async { [self] in
@@ -155,8 +192,10 @@ final class MultipeerSession: NSObject, ObservableObject {
         }
         do {
           let mode: MCSessionSendDataMode = reliable ? .reliable : .unreliable
-          try session.send(bin, toPeers: session.connectedPeers, with: mode)
-          log.debug("📤 Sent \(bin.count) B (\(mode == .reliable ? "R" : "U"))")
+            try session.send(bin, toPeers: session.connectedPeers, with: mode)
+            let turnStr = message.turnId?.uuidString.prefix(8) ?? "--"
+            let seqStr  = message.seq.map(String.init) ?? "-"
+            log.debug("📤 Sent \(bin.count)B (\(mode == .reliable ? "R" : "U")) turn=\(turnStr) seq=\(seqStr) final=\(message.isFinal)")
         } catch {
           let msg = Localization.localized("session.send error: %@", error.localizedDescription)
           log.error("\(msg)")
@@ -180,6 +219,10 @@ final class MultipeerSession: NSObject, ObservableObject {
     mpq.async { [self] in
       session.disconnect()
       quiesceRadio()
+
+      // Create a fresh session to avoid "Connection invalid" errors
+      session = makeSession()
+
       DispatchQueue.main.async {
         self.connectedPeers.removeAll()
         self.discoveredPeers.removeAll()
@@ -188,6 +231,15 @@ final class MultipeerSession: NSObject, ObservableObject {
       log.debug("[Multipeer] Disconnected")
     }
   }
+    
+    private func makeDiscoveryInfo() -> [String:String] {
+      [
+        "lang": localLanguage,
+        "o26":  isIOS26Plus ? "1" : "0",
+        "mode": wireMode.rawValue,
+        "role": (wireMode == .convention ? (isHost ? "host" : "listener") : "peer")
+      ]
+    }
 
 }
 
@@ -238,6 +290,10 @@ extension MultipeerSession: MCSessionDelegate {
       DispatchQueue.main.async {
         self.receivedMessage = msg
         self.onMessageReceived?(msg)
+          let turnStr = msg.turnId?.uuidString.prefix(8) ?? "--"
+          let seqStr  = msg.seq.map(String.init) ?? "-"
+          log.debug("📥 Rx turn=\(turnStr) seq=\(seqStr) final=\(msg.isFinal) ts=\(Int(msg.timestamp))")
+
       }
     }
   }
@@ -277,24 +333,28 @@ extension MultipeerSession: MCNearbyServiceAdvertiserDelegate {
 }
 
 extension MultipeerSession: MCNearbyServiceBrowserDelegate {
-  func browser(_: MCNearbyServiceBrowser,
-               foundPeer id: MCPeerID,
-               withDiscoveryInfo info: [String:String]?) {
-    DispatchQueue.main.async {
-      if let cap = info?["o26"] { self.peerOfflineCapable[id] = (cap == "1") } else { self.peerOfflineCapable[id] = false }
-      if !self.discoveredPeers.contains(id) { self.discoveredPeers.append(id) }
-      if let lang = info?["lang"] { self.peerLanguages[id] = lang }
+    func browser(_ : MCNearbyServiceBrowser,
+                 foundPeer id: MCPeerID,
+                 withDiscoveryInfo info: [String:String]?) {
+      DispatchQueue.main.async {
+        if let cap = info?["o26"] { self.peerOfflineCapable[id] = (cap == "1") } else { self.peerOfflineCapable[id] = false }
+        if !self.discoveredPeers.contains(id) { self.discoveredPeers.append(id) }
+        if let lang = info?["lang"]  { self.peerLanguages[id] = lang }
+        if let mode = info?["mode"]  { self.peerModes[id]     = mode }            // "peer" | "convention"
+        if let role = info?["role"]  { self.peerRoles[id]     = role }            // "host" | "listener" | "peer"
+      }
+      log.debug("🟢 Found peer \(id.displayName)")
     }
-    log.debug("🟢 Found peer \(id.displayName)")
-  }
 
-  func browser(_: MCNearbyServiceBrowser, lostPeer id: MCPeerID) {
-    DispatchQueue.main.async {
-      self.discoveredPeers.removeAll { $0 == id }
-      self.peerLanguages.removeValue(forKey: id)
+    func browser(_ : MCNearbyServiceBrowser, lostPeer id: MCPeerID) {
+      DispatchQueue.main.async {
+        self.discoveredPeers.removeAll { $0 == id }
+        self.peerLanguages.removeValue(forKey: id)
+        self.peerModes.removeValue(forKey: id)
+        self.peerRoles.removeValue(forKey: id)
+      }
+      log.debug("🔴 Lost peer \(id.displayName)")
     }
-    log.debug("🔴 Lost peer \(id.displayName)")
-  }
 
   func browser(_: MCNearbyServiceBrowser,
                didNotStartBrowsingForPeers error: Error) {
