@@ -53,7 +53,8 @@ struct ContentView: View {
                                 translated: view_model.translatedTextForMeToHear)
 
             Settings_sliders(mic: $view_model.micSensitivity,
-                             speed: $view_model.playbackSpeed)
+                             speed: $view_model.playbackSpeed,
+                             ttsPause: $view_model.ttsPauseDuration)
 
               Record_button(is_listening:  view_model.captureIsActive,
                             is_processing: view_model.isProcessing,
@@ -316,8 +317,11 @@ private struct Bubble: View {
 private struct Settings_sliders: View {
   @Binding var mic: Double
   @Binding var speed: Double
+  @Binding var ttsPause: Double
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
+      // Commented out mic sensitivity slider
+      /*
       VStack(alignment: .leading) {
         Text("Mic Sensitivity".localized)
           .font(.caption)
@@ -325,6 +329,22 @@ private struct Settings_sliders: View {
         Slider(value: $mic, in: 0...1)
           .tint(EwonicTheme.accent)
       }
+      */
+
+      VStack(alignment: .leading) {
+        HStack {
+          Text("TTS Pause Duration".localized)
+            .font(.caption)
+            .foregroundColor(.white.opacity(0.7))
+          Spacer()
+          Text(String(format: "%.1fs", ttsPause))
+            .font(.caption2)
+            .foregroundColor(.white.opacity(0.7))
+        }
+        Slider(value: $ttsPause, in: 0.5...3.0, step: 0.1)
+          .tint(EwonicTheme.accent)
+      }
+
       VStack(alignment: .leading) {
         Text("Playback Speed".localized)
           .font(.caption)
@@ -601,7 +621,8 @@ private struct ConventionScreen: View {
                         translated: vm.translatedTextForMeToHear)
 
     Settings_sliders(mic: $vm.micSensitivity,
-                     speed: $vm.playbackSpeed)
+                     speed: $vm.playbackSpeed,
+                     ttsPause: $vm.ttsPauseDuration)
 
     Record_button(is_listening:  vm.captureIsActive,
                   is_processing: vm.isProcessing,

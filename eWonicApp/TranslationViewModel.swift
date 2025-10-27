@@ -229,6 +229,20 @@ final class TranslationViewModel: ObservableObject {
     didSet { ttsService.speech_rate = Float(playbackSpeed) }
   }
 
+  // TTS pause duration (in seconds) - how long to wait after last partial before speaking
+  @Published var ttsPauseDuration: Double = 1.5 {
+    didSet {
+      // Clamp between 0.5 and 3.0 seconds
+      ttsPauseDuration = max(0.5, min(3.0, ttsPauseDuration))
+    }
+  }
+
+  // Timer for pause-based TTS
+  private var ttsPauseTimer: DispatchSourceTimer?
+  private var pendingTTSText: String = ""
+  private var pendingTTSLanguage: String = ""
+  private var pendingTTSVoice: String?
+
   // ─────────────────────────────── One‑Phone: history + drafts
   struct LocalTurn: Identifiable {
     let id: UUID
@@ -307,12 +321,13 @@ final class TranslationViewModel: ObservableObject {
       translatedTextForMeToHear = s
       lastPartialForTurn = s
 
-      // 🔒 Early-TTS is Peer-only. Convention should not speak partials.
+      // 🔒 Peer mode: show translation being sent to peer (no local TTS needed)
       guard mode == .peer else { return }
 
+      // Keep early TTS timer for sending to peer
       if earlyTTSTimer == nil { startEarlyTTSBailTimer() }
 
-      // Try to emit any full sentence(s) we haven’t sent yet
+      // Try to emit any full sentence(s) we haven't sent yet
       if let cut = lastSentenceBoundary(in: s, fromOffset: earlyTTSSentPrefix) {
         let start = s.index(s.startIndex, offsetBy: earlyTTSSentPrefix)
         let chunk = String(s[start..<cut])
@@ -329,6 +344,7 @@ final class TranslationViewModel: ObservableObject {
       translatedTextForMeToHear = s
       lastPartialForTurn = s
 
+      // Show text immediately (TTS handled by mode-specific logic)
       guard allowEarlyStreaming else { return }
 
       if earlyTTSTimer == nil { startEarlyTTSBailTimer() }
@@ -370,6 +386,7 @@ final class TranslationViewModel: ObservableObject {
 
     private func finalizePeerTurn(with final: String) {
       earlyTTSTimer?.cancel(); earlyTTSTimer = nil
+      cancelPendingTTS() // Cancel any pending pause-based TTS
 
       // send only what hasn't been spoken yet
       let s = final
@@ -412,6 +429,58 @@ final class TranslationViewModel: ObservableObject {
       return last
     }
     
+
+  // ─────────────────────────────── TTS Pause Helpers
+
+  /// Schedule TTS to play after the configured pause duration
+  private func scheduleTTSWithPause(text: String, languageCode: String, voiceIdentifier: String?) {
+    guard !text.isEmpty else { return }
+
+    // Store pending TTS info
+    pendingTTSText = text
+    pendingTTSLanguage = languageCode
+    pendingTTSVoice = voiceIdentifier
+
+    // Cancel existing timer
+    ttsPauseTimer?.cancel()
+
+    // Create new timer
+    let timer = DispatchSource.makeTimerSource(queue: .main)
+    timer.schedule(deadline: .now() + ttsPauseDuration)
+    timer.setEventHandler { [weak self] in
+      self?.firePausedTTS()
+    }
+    timer.resume()
+    ttsPauseTimer = timer
+  }
+
+  /// Fire the TTS after pause duration has elapsed
+  private func firePausedTTS() {
+    guard !pendingTTSText.isEmpty else { return }
+
+    // Speak the pending text
+    ttsService.speak(
+      text: pendingTTSText,
+      languageCode: pendingTTSLanguage,
+      voiceIdentifier: pendingTTSVoice
+    )
+
+    // Clear pending state
+    pendingTTSText = ""
+    pendingTTSLanguage = ""
+    pendingTTSVoice = nil
+    ttsPauseTimer?.cancel()
+    ttsPauseTimer = nil
+  }
+
+  /// Cancel any pending TTS
+  private func cancelPendingTTS() {
+    ttsPauseTimer?.cancel()
+    ttsPauseTimer = nil
+    pendingTTSText = ""
+    pendingTTSLanguage = ""
+    pendingTTSVoice = nil
+  }
 
   // ─────────────────────────────── Init
     init() {
@@ -546,6 +615,8 @@ final class TranslationViewModel: ObservableObject {
 
 
     func stopListening() {
+      cancelPendingTTS() // Cancel any pending TTS when stopping
+
       switch mode {
       case .peer, .convention:
         if useOfflinePeer {
@@ -640,6 +711,7 @@ final class TranslationViewModel: ObservableObject {
         .throttle(for: .milliseconds(350), scheduler: RunLoop.main, latest: true)
         .sink { [weak self] txt in
           guard let self, self.mode != .onePhone else { return }
+          // Show text immediately - TTS will be scheduled with pause
           self.handleStreamingPartial(txt)
         }
         .store(in: &cancellables)
@@ -668,13 +740,14 @@ final class TranslationViewModel: ObservableObject {
     // TranslationViewModel.swift
     // ─────────────────────────────── Peer pipelines (iOS 26+ native STT → on-device MT)
     private func wirePeerPipelinesOffline() {
-      // Live native partials → show line only
+      // Live native partials → show line only (no TTS for own speech in Peer mode)
       nativeSTT.partialResultSubject
         .receive(on: RunLoop.main)
         .removeDuplicates()
         .throttle(for: .milliseconds(350), scheduler: RunLoop.main, latest: true)
         .sink { [weak self] txt in
           guard let self, self.mode != .onePhone else { return }
+          // Show partial text immediately (TTS handled when receiving from peer)
           self.translatedTextForMeToHear = txt
         }
         .store(in: &cancellables)
@@ -709,11 +782,12 @@ final class TranslationViewModel: ObservableObject {
   // ─────────────────────────────── One‑Phone pipelines
   private func wireAutoPipelines() {
 
-    // Live partials → UI “Live” line
+    // Live partials → UI "Live" line (TTS handled by finals)
     autoService.partial
       .receive(on: RunLoop.main)
       .throttle(for: .milliseconds(450), scheduler: RunLoop.main, latest: true)
       .sink { [weak self] (_, tx, _) in
+        // Show partial text immediately (TTS handled when finalized)
         self?.translatedTextForMeToHear = tx
       }
       .store(in: &cancellables)
@@ -777,11 +851,12 @@ final class TranslationViewModel: ObservableObject {
     // ─────────────────────────────── Convention commit-on-interval
     private func handleConventionPartial(_ snapshot: NativeSTTService.PartialSnapshot) {
         guard mode == .convention, useOfflineOnePhone else { return }
-        
+
         let full = snapshot.text
-        
+
         print("[Convention] partial len=\(full.count) carry=\(convCarryPrefix.count) cursor=\(convCursor)")
 
+        // Show partial text immediately (TTS handled by phrase queue system)
         translatedTextForMeToHear = full
         
         // keep recent partials for tail-stability check
@@ -1189,6 +1264,8 @@ final class TranslationViewModel: ObservableObject {
 
     private func handleOnePhonePartial(_ snapshot: NativeSTTService.PartialSnapshot) {
       guard mode == .onePhone, useOfflineOnePhone else { return }
+
+      // Show partial text immediately (TTS handled by phrase queue system)
       translatedTextForMeToHear = snapshot.text
 
       if turnContext == nil || (turnContext?.committed == true && snapshot.text != turnContext?.rollingText) {
@@ -1825,14 +1902,20 @@ final class TranslationViewModel: ObservableObject {
           await MainActor.run {
             if m.isFinal {
               peerSaidText = "Peer: %@".localizedFormat(tx)
+              // Final: cancel any pending TTS and speak immediately
+              cancelPendingTTS()
+              ttsService.speak(text: tx,
+                               languageCode: myLanguage,
+                               voiceIdentifier: voice_for_lang[myLanguage])
             } else {
+              // Partial: show immediately but schedule TTS with pause
               translatedTextForMeToHear = tx
+              scheduleTTSWithPause(text: tx,
+                                   languageCode: myLanguage,
+                                   voiceIdentifier: voice_for_lang[myLanguage])
             }
             isProcessing = true
             print("PeerRX: \(useOfflinePeer ? "on-device" : "online") tx to \(myLanguage)")
-            ttsService.speak(text: tx,
-                             languageCode: myLanguage,
-                             voiceIdentifier: voice_for_lang[myLanguage])
           }
         }
 
