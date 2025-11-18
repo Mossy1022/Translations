@@ -38,36 +38,15 @@ struct ContentView: View {
 
           } else if view_model.mode == .peer {
 
-            // ───── Peer (unchanged main UI) ─────
-            Language_bar(my_lang:   $view_model.myLanguage,
-                         peer_lang: $view_model.peerLanguage,
-                         list:      view_model.availableLanguages,
-                         disabled:  view_model.isProcessing || view_model.captureIsActive)
+            PeerScreen(vm: view_model)
 
-            Voice_bar(voice_for_lang: $view_model.voice_for_lang,
-                      voices:        view_model.availableVoices)
+          } else if view_model.mode == .convention &&
+                    view_model.multipeerSession.connectionState != .connected {
 
-            Conversation_scroll(my_text:  view_model.myTranscribedText,
-                                peer_label: "Peer".localized,
-                                peer_text: view_model.peerSaidText,
-                                translated: view_model.translatedTextForMeToHear)
-
-            Settings_sliders(mic: $view_model.micSensitivity,
-                             speed: $view_model.playbackSpeed,
-                             ttsPause: $view_model.ttsPauseDuration)
-
-              Record_button(is_listening:  view_model.captureIsActive,
-                            is_processing: view_model.isProcessing,
-                            start_action:  view_model.startListening,
-                            stop_action:   view_model.stopListening)
-
-
-            Button("Clear History".localized) { view_model.resetConversationHistory() }
-              .font(.caption)
-              .foregroundColor(.white.opacity(0.7))
-              .padding(.top, 4)
+            ConventionDiscoveryView(session: view_model.multipeerSession)
 
           } else if view_model.mode == .convention {
+
             ConventionScreen(vm: view_model)
           } else {
             // ───── One‑Phone Conversation ─────
@@ -83,9 +62,6 @@ struct ContentView: View {
         }
 
         ErrorBanner(message: $view_model.errorMessage)
-          DebugQueueHUD(vm: view_model)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            .padding(.bottom, 56) // keep it above the system home bar
       }
       .navigationBarHidden(true)
     }
@@ -333,7 +309,7 @@ private struct Settings_sliders: View {
 
       VStack(alignment: .leading) {
         HStack {
-          Text("TTS Pause Duration".localized)
+          Text("Translation delay".localized)
             .font(.caption)
             .foregroundColor(.white.opacity(0.7))
           Spacer()
@@ -505,6 +481,186 @@ private struct Record_button: View {
   }
 }
 
+private struct ConventionDiscoveryView: View {
+  @ObservedObject var session: MultipeerSession
+
+  var body: some View {
+    VStack(spacing: 18) {
+      Text("Join a Convention".localized)
+        .font(.title2.weight(.semibold))
+
+      HStack(spacing: 20) {
+        Button {
+          session.stopBrowsing()
+          session.startHosting()
+        } label: {
+          Label("Host Convention".localized, systemImage: "antenna.radiowaves.left.and.right")
+            .frame(maxWidth: .infinity)
+            .padding()
+        }
+        .background(EwonicTheme.accent.opacity(0.25),
+                    in: RoundedRectangle(cornerRadius: 10))
+
+        Button {
+          session.stopHosting()
+          session.startBrowsing()
+        } label: {
+          Label("Join Convention".localized, systemImage: "magnifyingglass")
+            .frame(maxWidth: .infinity)
+            .padding()
+        }
+        .background(Color.cyan.opacity(0.25),
+                    in: RoundedRectangle(cornerRadius: 10))
+      }
+      .buttonStyle(.plain)
+
+      if !session.discoveredPeers.isEmpty {
+        Text("Found Hosts:".localized)
+          .font(.headline)
+
+        List(session.discoveredPeers, id: \.self) { peer in
+          Button(peer.displayName) { session.invitePeer(peer) }
+            .listRowBackground(Color.clear)
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .frame(maxHeight: 220)
+
+      } else if session.isBrowsing || session.isAdvertising {
+        HStack {
+          ProgressView()
+          Text(session.isBrowsing ? "Searching…".localized : "Waiting…".localized)
+        }
+        .foregroundColor(.white.opacity(0.7))
+      }
+
+      if session.connectionState != .notConnected ||
+         session.isBrowsing || session.isAdvertising {
+        Button("Stop Activities".localized) { session.disconnect() }
+          .padding(.top, 8)
+          .buttonStyle(.bordered)
+          .tint(.red)
+      }
+    }
+    .padding()
+    .background(Color.white.opacity(0.05),
+                in: RoundedRectangle(cornerRadius: 14))
+    .foregroundColor(.white)
+  }
+}
+
+private struct ConversationTopBar: View {
+  let title: String
+  @Binding var showSettings: Bool
+  var body: some View {
+    HStack(spacing: 16) {
+      Text(title).font(.title2.weight(.semibold))
+      Spacer()
+      Button { showSettings = true } label: {
+        Image(systemName: "slider.horizontal.3").font(.title3)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Settings".localized)
+    }
+    .foregroundColor(.white.opacity(0.95))
+  }
+}
+
+private struct ConversationSettingsSheet: View {
+  @Binding var speed: Double
+  @Binding var ttsPause: Double
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    NavigationView {
+      VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: 12) {
+          HStack {
+            Text("Pause before speaking".localized)
+              .font(.caption).foregroundColor(.secondary)
+            Spacer()
+            Text(String(format: "%.1fs", ttsPause))
+              .font(.caption2).foregroundColor(.secondary)
+          }
+          Slider(value: $ttsPause, in: 0.5...3.0, step: 0.1)
+            .tint(EwonicTheme.accent)
+        }
+
+        VStack(alignment: .leading, spacing: 12) {
+          Text("Playback speed".localized)
+            .font(.caption).foregroundColor(.secondary)
+          Slider(value: $speed, in: 0...1)
+            .tint(EwonicTheme.accent)
+        }
+
+        Spacer()
+      }
+      .padding()
+      .navigationTitle("Conversation Settings".localized)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button(action: { dismiss() }) { Image(systemName: "xmark") }
+        }
+      }
+    }
+    .presentationDetents([.medium])
+    .presentationDragIndicator(.visible)
+  }
+}
+
+private struct PeerScreen: View {
+  @ObservedObject var vm: TranslationViewModel
+  @State private var showSettings = false
+
+  var body: some View {
+    ConversationTopBar(title: "Conversation".localized, showSettings: $showSettings)
+
+    LangVoiceRow(my_lang: $vm.myLanguage,
+                 voice_for_lang: $vm.voice_for_lang,
+                 languages: vm.availableLanguages,
+                 voices: vm.availableVoices,
+                 disabled: vm.isProcessing || vm.captureIsActive)
+
+    Conversation_scroll(my_text:  vm.myTranscribedText,
+                        peer_label: "Peer".localized,
+                        peer_text: vm.peerSaidText,
+                        translated: vm.translatedTextForMeToHear)
+
+    Record_button(is_listening:  vm.captureIsActive,
+                  is_processing: vm.isProcessing,
+                  start_action:  vm.startListening,
+                  stop_action:   vm.stopListening)
+
+    Button("Clear History".localized) { vm.resetConversationHistory() }
+      .font(.caption)
+      .foregroundColor(.white.opacity(0.7))
+      .padding(.top, 4)
+
+    .sheet(isPresented: $showSettings) {
+      ConversationSettingsSheet(speed: $vm.playbackSpeed,
+                                ttsPause: $vm.ttsPauseDuration)
+    }
+  }
+}
+
+private struct LangVoiceRow: View {
+  @Binding var my_lang: String
+  @Binding var voice_for_lang: [String:String]
+  let languages: [TranslationViewModel.Language]
+  let voices: [TranslationViewModel.Voice]
+  let disabled: Bool
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Single_language_bar(my_lang: $my_lang, list: languages, disabled: disabled)
+      Voice_bar(voice_for_lang: $voice_for_lang, voices: voices)
+    }
+    .disabled(disabled)
+    .opacity(disabled ? 0.55 : 1)
+  }
+}
+
 private struct PeerDiscoveryView: View {
   @ObservedObject var session: MultipeerSession
 
@@ -602,39 +758,52 @@ private struct ErrorBanner: View {
 }
 
 
-
 private struct ConventionScreen: View {
   @ObservedObject var vm: TranslationViewModel
+  @State private var showSettings = false
 
   var body: some View {
-    Convention_language_bar(my_lang: $vm.myLanguage,
-                            speaker_lang: $vm.peerLanguage,
-                            list: vm.availableLanguages,
-                            disabled: vm.isProcessing || vm.captureIsActive)
+    let isHost = vm.multipeerSession.role == .host
 
-    Voice_bar(voice_for_lang: $vm.voice_for_lang,
-              voices:        vm.availableVoices)
+    ConversationTopBar(title: "Conversation".localized, showSettings: $showSettings)
+
+    LangVoiceRow(my_lang: $vm.myLanguage,
+                 voice_for_lang: $vm.voice_for_lang,
+                 languages: vm.availableLanguages,
+                 voices: vm.availableVoices,
+                 disabled: vm.isProcessing || vm.captureIsActive)
 
     Conversation_scroll(my_text: "",
                         peer_label: "Speaker".localized,
                         peer_text: vm.peerSaidText,
                         translated: vm.translatedTextForMeToHear)
 
-    Settings_sliders(mic: $vm.micSensitivity,
-                     speed: $vm.playbackSpeed,
-                     ttsPause: $vm.ttsPauseDuration)
-
     Record_button(is_listening:  vm.captureIsActive,
                   is_processing: vm.isProcessing,
                   start_action:  vm.startListening,
                   stop_action:   vm.stopListening)
+      .disabled(!isHost)
+      .opacity(isHost ? 1 : 0.5)
+
+    if !isHost {
+      Text("Only the host can speak in Convention.".localized)
+        .font(.caption)
+        .foregroundColor(.white.opacity(0.7))
+    }
 
     Button("Clear History".localized) { vm.resetConversationHistory() }
       .font(.caption)
       .foregroundColor(.white.opacity(0.7))
       .padding(.top, 4)
+
+    .sheet(isPresented: $showSettings) {
+      ConversationSettingsSheet(speed: $vm.playbackSpeed,
+                                ttsPause: $vm.ttsPauseDuration)
+    }
   }
 }
+
+
 
 // ────────────────────────── ONE‑PHONE SCREEN ──────────────────────────
 
@@ -807,6 +976,19 @@ private struct LiveCard: View {
   }
 }
 
+private struct Single_language_bar: View {
+  @Binding var my_lang: String
+  let list: [TranslationViewModel.Language]
+  let disabled: Bool
+  var body: some View {
+    HStack(spacing: 12) {
+      Lang_menu(label: "Language", code: $my_lang, list: list)
+    }
+    .disabled(disabled)
+    .opacity(disabled ? 0.55 : 1)
+  }
+}
+
 private struct LanguageTile: View {
   let title: String
   let code: String
@@ -864,45 +1046,5 @@ private struct MicButton: View {
                     in: Circle())
         .foregroundColor(.white)
     }
-  }
-}
-
-private struct DebugQueueHUD: View {
-  @ObservedObject var vm: TranslationViewModel
-  var body: some View {
-    if !vm.debugMode { return AnyView(EmptyView()) }
-    return AnyView(
-      VStack(alignment: .leading, spacing: 6) {
-        HStack {
-          Text("Queue: \(vm.phraseQueue.count)")
-            .font(.caption.weight(.bold))
-          Spacer()
-        }
-        ForEach(vm.debugItems.suffix(6)) { item in
-          HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(badge(item.state))
-              .font(.caption2.monospaced())
-              .padding(.horizontal, 6).padding(.vertical, 2)
-              .background(badgeColor(item.state).opacity(0.2))
-              .clipShape(Capsule())
-            Text(item.text)
-              .lineLimit(1)
-              .truncationMode(.tail)
-              .font(.caption2)
-          }
-        }
-      }
-      .padding(8)
-      .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
-      .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15), lineWidth: 1))
-      .foregroundColor(.white)
-      .padding([.leading, .bottom], 12)
-    )
-  }
-  private func badge(_ s: TranslationViewModel.DebugQ.State) -> String {
-    switch s { case .queued: return "Q"; case .speaking: return "▶"; case .done: return "✓" }
-  }
-  private func badgeColor(_ s: TranslationViewModel.DebugQ.State) -> Color {
-    switch s { case .queued: return .yellow; case .speaking: return .blue; case .done: return .green }
   }
 }

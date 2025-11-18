@@ -36,6 +36,8 @@ enum STTError: Error, LocalizedError {
   }
 }
 
+
+
 private enum InternalErr {
     static let noSpeechCodes: Set<Int> = [203, 1110]
    static let svcCrash = 1101
@@ -61,6 +63,9 @@ final class NativeSTTService: NSObject, ObservableObject {
   private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
   private var recognitionTask:   SFSpeechRecognitionTask?
   private let audioEngine = AVAudioEngine()
+    
+    private var notifTokens: [NSObjectProtocol] = []
+
     
     // Debounce frantic re-rotates immediately after a restart
     private var rotateCooldownUntil = Date.distantPast
@@ -107,21 +112,12 @@ final class NativeSTTService: NSObject, ObservableObject {
 
 
     override init() {
-        // 1) make the pipe
-        let (stream, cont) = AsyncStream<String>.makeStream(
-                               bufferingPolicy: .bufferingNewest(32))
-        self.partialStream       = stream
-        self.partialContinuation = cont
-
-        super.init()             // ← call NSObject
-
-        // 2) forward every partial transcript into the pipe
-        streamCancellable = partialResultSubject
-            .sink { [cont] text in
-                cont.yield(text)        // <-- live push
-            }
-        
-        
+      let (stream, cont) = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(32))
+      self.partialStream       = stream
+      self.partialContinuation = cont
+      super.init()
+      streamCancellable = partialResultSubject.sink { [cont] text in cont.yield(text) }
+//      wireAudioSessionNotifications()   // ← ensure recovery is enabled
     }
 
   // ───────────── Permissions (unchanged) ─────────────
@@ -146,6 +142,50 @@ final class NativeSTTService: NSObject, ObservableObject {
       r.delegate = self
       let onDevice = r.supportsOnDeviceRecognition
       print("[NativeSTT] recognizer ready – lang: \(languageCode), on-device:\(onDevice)")
+    }
+    
+    private func wireAudioSessionNotifications() {
+      let c = NotificationCenter.default
+
+      let t1 = c.addObserver(forName: AVAudioSession.routeChangeNotification,
+                             object: nil, queue: .main) { [weak self] note in
+        guard let self else { return }
+        guard self.isListening else { return }
+        let info = note.userInfo ?? [:]
+        let raw  = (info[AVAudioSessionRouteChangeReasonKey] as? UInt) ?? 0
+        let reason = AVAudioSession.RouteChangeReason(rawValue: raw) ?? .unknown
+        print("[NativeSTT] route change \(reason.rawValue) → rotate")
+        // Safe recovery path that re-installs the tap and task
+        self.rotate()
+      }
+
+      let t2 = c.addObserver(forName: AVAudioSession.interruptionNotification,
+                             object: nil, queue: .main) { [weak self] note in
+        guard let self else { return }
+        let info = note.userInfo ?? [:]
+        let typeRaw = (info[AVAudioSessionInterruptionTypeKey] as? UInt) ?? 0
+        guard let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
+
+        switch type {
+        case .began:
+          print("[NativeSTT] interruption began → gate & endAudio()")
+          self.recognitionRequest?.endAudio()
+          self.ignoreBuffers = true          // gate tap until we rotate
+        case .ended:
+          print("[NativeSTT] interruption ended → rotate")
+          self.rotate()
+        @unknown default:
+          break
+        }
+      }
+
+      notifTokens = [t1, t2]
+    }
+
+    deinit {
+      let c = NotificationCenter.default
+      notifTokens.forEach { c.removeObserver($0) }
+      notifTokens.removeAll()
     }
 
   // ───────────── Public start/stop (same names!) ─────────────
@@ -196,6 +236,18 @@ final class NativeSTTService: NSObject, ObservableObject {
     }
     
     private var ignoreBuffers = false
+    
+    // Allow the host to temporarily gate audio ingestion without tearing down the engine.
+      func gateInput(for seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+        ignoreBuffers = true
+        let delay = max(0.05, seconds)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+          self?.ignoreBuffers = false
+          print("[NativeSTT] mic gate lifted")
+        }
+        print("[NativeSTT] mic gated for \(String(format: "%.2fs", delay))")
+      }
 
   private func installTap() {
       ignoreBuffers = false
@@ -267,32 +319,28 @@ final class NativeSTTService: NSObject, ObservableObject {
     private func spinUpTask() {
       guard let recognizer = speechRecognizer else { return }
 
-      recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-      // Try to force on-device when running on iOS 26+ (for languages that support it)
-      if #available(iOS 26.0, *) {
-        recognitionRequest?.requiresOnDeviceRecognition = true
-        print("[NativeSTT] requiresOnDeviceRecognition=true (iOS26)")
-      } else if recognizer.supportsOnDeviceRecognition {
-        recognitionRequest?.requiresOnDeviceRecognition = true
+      let req = SFSpeechAudioBufferRecognitionRequest()
+      req.shouldReportPartialResults = true
+      if #available(iOS 13.0, *) { req.taskHint = .dictation }
+
+      if recognizer.supportsOnDeviceRecognition {
+        req.requiresOnDeviceRecognition = true
         print("[NativeSTT] requiresOnDeviceRecognition=true")
       } else {
+        req.requiresOnDeviceRecognition = false
         print("[NativeSTT] on-device not supported for this locale; cloud dictation may be used by iOS")
       }
-        
-        recognitionRequest?.shouldReportPartialResults = true
-        if #available(iOS 13.0, *) {
-          recognitionRequest?.taskHint = .dictation
-        }
-        
-      segmentStart = Date(); lastBufferHostTime = 0
+
+      recognitionRequest = req
+      segmentStart = Date()
+      lastBufferHostTime = 0
       scheduleWatchdog()
 
-      recognitionTask = recognizer.recognitionTask(with: recognitionRequest!) { [self] res, err in
+      recognitionTask = recognizer.recognitionTask(with: req) { [self] res, err in
         if let r = res { handle(result:r) }
         if let e = err as NSError? { handle(error:e) }
       }
     }
-
 
     private func teardownTask() {
       recognitionRequest?.endAudio()

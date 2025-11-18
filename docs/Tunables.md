@@ -2,6 +2,7 @@
 - Stable cutoff (One‑Phone): **1.3s** (±0.2s)
 - Long-speech cap: **7s**
 - Early-TTS bailout (Peer): **6–10s**; min chunk **≥24**
+- Pause gate (Peer playback): default **1.5s**, clamps **0.5–3.0s**
 - Post-TTS grace: **1.0–1.5s** (route-aware; BT ≈ 1.4–1.6s)
 - Retarget window (One‑Phone): **~2.0s**, **max 1 flip/phrase**
 - Inter‑TTS gap cap: **≤150ms**

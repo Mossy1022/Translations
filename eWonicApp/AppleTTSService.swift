@@ -95,6 +95,9 @@ final class AppleTTSService: NSObject, ObservableObject {
         print("[TTS] fallback voice: \(v?.name ?? "<none>")")
         utt.voice = v
       }
+      
+      let vName = utt.voice?.name ?? "-"
+      print("[TTS] SPEAK text=\(text) lang=\(languageCode) voice=\(vName)")
 
     synthesizer.speak(utt)
     isSpeaking = true

@@ -1,5 +1,6 @@
 **Peer / Convention**
 - Prefer sentence-boundary emission; bailout timer **6–10s**; min chunk length **≥24 chars**.
+- TTS playback arms only after the pause gate (default **1.5s**) so offline + online receivers speak at the same time the pause fires; partials keep streaming on-screen.
 - Maintain `earlyTTSSentPrefix`; never double-emit; finals must include unsent tail.
 
 **One‑Phone (phrase-commit)**

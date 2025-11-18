@@ -6,6 +6,7 @@ Idle → Capturing → Translating(partials) → Emitting(early-TTS/enqueue) →
 - All transitions go through a single coordinator that first cancels timers / pending tasks.
 - While `Speaking(TTS)`, capture may **collect** but emit/translate is paused. Resume once after **grace**.
 - `Grace` is route-aware (~1.2s baseline; see Tunables).
+- Peer inbound playback (offline + online) waits for the pause gate before entering `Speaking`; partial text still streams live on screen.
 - **Interruption handling (lock-screen / phone call):**  
 On interruption: pause capture, set `hasFloor=false`, cancel resume timers.  
 On resume: `resumeCapture(previousTargetLang)` and rebuild the current **TurnContext**.

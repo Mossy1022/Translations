@@ -9,6 +9,8 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ewonic-xlat._tcp</string>
+		<string>_ewonic-conv._tcp</string>
+		<string>_ewonic-peer._tcp</string>
 	</array>
 	<key>NSPrivacyMicrophoneUsageDescription</key>
 	<string>Live speech must be captured for on-device translation.</string>
